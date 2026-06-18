@@ -201,6 +201,9 @@ export function generateFoliage(graph, genome, opts) {
   const ageColor  = new Float32Array(MAX_SEED_HEADS);
   const exposure  = new Float32Array(MAX_SEED_HEADS);
   const boneIndex = new Float32Array(MAX_SEED_HEADS); // default 0 (backward-compat)
+  // aspect: per-instance length/width ratio (1 = round grain/card; large = thin
+  // awn bristle). Consumed by the viewer's grain InstancedMesh to stretch awns.
+  const aspect    = new Float32Array(MAX_SEED_HEADS).fill(1);
 
   // nodeToBlade map from opts (optional).
   const nodeToBlade = (opts && opts.nodeToBlade) ? opts.nodeToBlade : null;
@@ -210,6 +213,14 @@ export function generateFoliage(graph, genome, opts) {
   // -------------------------------------------------------------------------
   const seedHead = genome.seedHead !== undefined ? genome.seedHead : 0;
   const shape    = seedHead; // semantic role of old appendageBreadth
+
+  // Inflorescence genes (structured ear). inflorescenceType<=0 keeps the legacy
+  // radial-fan panicle so all existing foliage contracts are byte-identical.
+  const inflorescenceType = genome.inflorescenceType !== undefined ? genome.inflorescenceType : 0;
+  const spikeletCountG    = genome.spikeletCount     !== undefined ? genome.spikeletCount     : 0.5;
+  const grainsPerSpkG     = genome.grainsPerSpikelet !== undefined ? genome.grainsPerSpikelet : 0.5;
+  const awnLengthG        = genome.awnLength         !== undefined ? genome.awnLength         : 0;
+  const midEarBulgeG      = genome.midEarBulge       !== undefined ? genome.midEarBulge       : 0.5;
 
   // -------------------------------------------------------------------------
   // V1 EARLY EXIT: seedHead === 0 → no instances, count: 0.
@@ -228,6 +239,7 @@ export function generateFoliage(graph, genome, opts) {
       ageColor,
       exposure,
       boneIndex,
+      aspect,
       shape,
     };
   }
@@ -254,6 +266,101 @@ export function generateFoliage(graph, genome, opts) {
     const pIdx = node.parentIdx;
     if (pIdx === undefined || pIdx < 0) continue;
     tips.push({ nodeIdx: i, node, parentIdx: pIdx });
+  }
+
+  // -------------------------------------------------------------------------
+  // STRUCTURED INFLORESCENCE (wheat-style ear) — inflorescenceType > 0.
+  //
+  // A rachis rises from each blade tip bearing N spikelets — distichous (two
+  // ranked, azimuth (i mod 2)·π) for a tight spike/ear, or golden-angle spiral
+  // for an open panicle — each holding G grain ovoids, optionally awned. Grains
+  // and awns share the SoA; `aspect` stretches awns into thin bristles. Mid-ear
+  // bulge makes central spikelets largest (spindle). Uses ONLY the isolated
+  // foliage rng. Legacy fan (below) handles inflorescenceType <= 0.
+  // -------------------------------------------------------------------------
+  if (inflorescenceType > 0) {
+    const N = Math.max(3, Math.round(8 + spikeletCountG * 20));  // spikelets/ear ∈ [8,28]
+    const G = Math.max(1, Math.round(1 + grainsPerSpkG * 4));    // grains/spikelet ∈ [1,5]
+    const distichous = inflorescenceType >= 0.5;                 // spike vs panicle
+    const GOLDEN = 2.399963229728653;                            // 137.50776° in radians
+    const UP = [0, 1, 0];
+
+    const grainBase = 0.006 + 0.005 * seedHead;                  // ~6–11 mm grain
+    let count = 0;
+
+    for (const { node, parentIdx } of tips) {
+      if (count >= MAX_SEED_HEADS) break;
+      const parent = nodes[parentIdx];
+      const tipPos = node.pos;
+
+      // Blade heading at the tip; the ear stands up (blend toward world up).
+      const dir = norm3([tipPos[0] - parent.pos[0], tipPos[1] - parent.pos[1], tipPos[2] - parent.pos[2]]);
+      const earDir = norm3([dir[0] * 0.4 + UP[0] * 0.6, dir[1] * 0.4 + UP[1] * 0.6, dir[2] * 0.4 + UP[2] * 0.6]);
+      const perp = perpTo(earDir);
+
+      const earLen    = 0.05 + 0.13 * spikeletCountG;            // ~5–18 cm
+      const internode = earLen / Math.max(N - 1, 1);
+      const azBase    = rng() * Math.PI * 2;                     // one draw per ear
+
+      for (let i = 0; i < N && count < MAX_SEED_HEADS; i++) {
+        const u  = N > 1 ? i / (N - 1) : 0;
+        const z  = i * internode;
+        const cx = tipPos[0] + earDir[0] * z;
+        const cy = tipPos[1] + earDir[1] * z;
+        const cz = tipPos[2] + earDir[2] * z;
+        const az = distichous ? azBase + (i % 2) * Math.PI : azBase + i * GOLDEN;
+        const radial = rotate3(perp, earDir, az);
+        // Mid-ear bulge: spindle that peaks at u=0.5 when midEarBulge>0.5.
+        const bulge   = 1.0 + (midEarBulgeG - 0.5) * 1.4 * (Math.sin(Math.PI * u) - 0.5);
+        const spkScale = grainBase * Math.max(0.3, bulge);
+
+        for (let k = 0; k < G && count < MAX_SEED_HEADS; k++) {
+          const side  = (k % 2 === 0) ? 1 : -1;
+          const stack = (k * 0.5) * spkScale;
+          const off   = spkScale * 0.6 * side;
+          const jx    = (rng() - 0.5) * spkScale * 0.3;
+          const gt = norm3([earDir[0] * 0.7 + radial[0] * 0.3, earDir[1] * 0.7 + radial[1] * 0.3, earDir[2] * 0.7 + radial[2] * 0.3]);
+          const gn = norm3(cross3(gt, radial));
+          const sj = 0.85 + rng() * 0.3;
+          const i3 = count * 3;
+          position[i3]     = cx + radial[0] * off + earDir[0] * stack + jx;
+          position[i3 + 1] = cy + radial[1] * off + earDir[1] * stack;
+          position[i3 + 2] = cz + radial[2] * off + earDir[2] * stack;
+          tangent[i3]      = gt[0]; tangent[i3 + 1] = gt[1]; tangent[i3 + 2] = gt[2];
+          normal[i3]       = gn[0]; normal[i3 + 1]  = gn[1]; normal[i3 + 2]  = gn[2];
+          scale[count]     = spkScale * sj;
+          aspect[count]    = 1.6;                               // ovoid grain
+          rotation[count]  = (rng() - 0.5) * Math.PI;
+          ageColor[count]  = Math.min(1, 0.3 + 0.6 * u);        // riper toward the tip
+          exposure[count]  = Math.min(1, Math.max(0, u));
+          boneIndex[count] = 0;
+          count++;
+        }
+
+        // Awn bristle (one per spikelet) when awned.
+        if (awnLengthG > 0 && count < MAX_SEED_HEADS) {
+          const awnWidth = Math.max(0.0012, spkScale * 0.18);
+          const awnLen   = awnLengthG * earLen * 1.1 + 0.01;
+          const at = norm3([earDir[0] * 0.85 + radial[0] * 0.15, earDir[1] * 0.85 + radial[1] * 0.15, earDir[2] * 0.85 + radial[2] * 0.15]);
+          const an = norm3(cross3(at, radial));
+          const i3 = count * 3;
+          position[i3]     = cx + radial[0] * spkScale * 0.5;
+          position[i3 + 1] = cy + radial[1] * spkScale * 0.5;
+          position[i3 + 2] = cz + radial[2] * spkScale * 0.5;
+          tangent[i3]      = at[0]; tangent[i3 + 1] = at[1]; tangent[i3 + 2] = at[2];
+          normal[i3]       = an[0]; normal[i3 + 1]  = an[1]; normal[i3 + 2]  = an[2];
+          scale[count]     = awnWidth;
+          aspect[count]    = awnLen / awnWidth;                 // long thin bristle
+          rotation[count]  = 0;
+          ageColor[count]  = 0.9;                               // straw
+          exposure[count]  = Math.min(1, Math.max(0, u));
+          boneIndex[count] = 0;
+          count++;
+        }
+      }
+    }
+
+    return { count, position, normal, tangent, scale, rotation, ageColor, exposure, boneIndex, aspect, shape };
   }
 
   // -------------------------------------------------------------------------
@@ -402,6 +509,7 @@ export function generateFoliage(graph, genome, opts) {
     ageColor,
     exposure,
     boneIndex,
+    aspect,
     shape,
   };
 }

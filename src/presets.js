@@ -31,21 +31,43 @@ export const GRASS_DEFAULT = {
   bladeSegments:   0.80,  // ≈7 segments (3 + round(0.80*5)) — smooth curve, not faceted
   seedHead:        0.00,  // no inflorescence
   fanSpread:       0.70,  // wide azimuthal splay so clump edges feather into neighbours
+  inflorescenceType: 0.00, // no structured ear (legacy fan path) — identity
+  spikeletCount:     0.50, // inert until inflorescenceType > 0
+  grainsPerSpikelet: 0.50, // inert until inflorescenceType > 0
   // Proportions
   bladeLength:     0.35,  // ≈0.87 m mid lawn blade
-  bladeWidth:      0.15,  // narrow ribbon → half-width ≈ 5.2 mm, aspect ratio ~80:1
+  bladeWidth:      0.20,  // ≈16 mm wide lawn blade (parallel, narrows only near the tip)
   bladeTaper:      0.95,  // nearly needle tip — tip collapses to ≈0.26 mm (grass-like point)
   arch:            0.20,  // gentle bow; not stiff, not drooping
   curve:           0.15,  // slight lateral curve
   stiffness:       0.60,  // fairly stiff
   verticality:     0.55,  // slightly more erect than prostrate
   tipDroop:        0.10,  // slight tip droop
+  // Per-blade range maxima (base gene above = min): blades in a clump vary.
+  bladeLengthMax:  0.55,  // height varies 0.35–0.55 across tillers
+  bladeWidthMax:   0.28,
+  bladeTaperMax:   0.95,
+  archMax:         0.35,
+  tipDroopMax:     0.25,
+  bladeShape:      0.28,  // gentle lanceolate belly (also makes the widestPos slider live)
+  widestPos:       0.50,  // position of max width (active because bladeShape > 0)
+  crossSectionCurl: 0.20, // gentle channel — lawn blades cup slightly
+  bladeTwist:      0.00,  // untwisted
+  stemRoundness:   0.00,  // flat blade (identity); 1 = round stalk/culm
+  awnLength:       0.00,  // awnless
+  midEarBulge:     0.50,  // uniform ear (inert without an inflorescence)
   // Cosmetic
   pigment:         0.29,  // hue ≈ 104° on HSL wheel → muted olive/lawn green (less vivid)
   bladeRaggedness: 0.10,  // slightly ragged edge
   colorVariation:  0.28,  // visible-but-subtle per-blade variety (maps to aColorJitter)
   jitter:          0.40,  // moderate positional noise
   midribStrength:  0.20,  // subtle midrib crease
+  veining:         0.45,  // gentle longitudinal striations + midrib shading
+  // Condition-driven color baselines (env shifts the final axes live):
+  chlorophyll:     0.60,  // healthy green
+  senescence:      0.00,  // lush
+  anthoPropensity: 0.00,  // does not redden
+  glaucousness:    0.00,  // no waxy bloom
   structuralSeed:  1337,  // default structural seed (uint32)
 };
 
@@ -92,7 +114,7 @@ export const PRESETS = [
       tillerCount:     0.85,  // very dense clump (≈10 blades)
       clumpSpread:     0.20,  // tight footprint
       bladeLength:     0.12,  // very short → ≈ 0.15+0.12*2.05 ≈ 0.40 m
-      bladeWidth:      0.10,  // very narrow ribbon → half-width ≈ 4.8 mm
+      bladeWidth:      0.12,  // ≈11 mm — fine blade
       bladeTaper:      0.95,  // near needle-tip
       arch:            0.10,  // near-stiff upright
       stiffness:       0.80,  // stiff blades
@@ -116,7 +138,7 @@ export const PRESETS = [
       tillerCount:     0.70,
       clumpSpread:     0.55,  // wider spread
       bladeLength:     0.08,  // very short blades
-      bladeWidth:      0.12,  // narrow → half-width ≈ 5.0 mm
+      bladeWidth:      0.14,  // ≈12 mm
       bladeTaper:      0.90,
       arch:            0.50,  // moderate arch → prostrate bend
       stiffness:       0.35,  // flexible, lies flat
@@ -143,7 +165,7 @@ export const PRESETS = [
       tillerCount:     0.55,
       clumpSpread:     0.45,
       bladeLength:     0.55,  // taller blades ≈ 1.28 m
-      bladeWidth:      0.30,  // moderate → half-width ≈ 6.4 mm
+      bladeWidth:      0.27,  // ≈22 mm
       bladeTaper:      0.85,
       arch:            0.35,
       stiffness:       0.50,
@@ -154,6 +176,8 @@ export const PRESETS = [
       bladeRaggedness: 0.20,
       jitter:          0.60,  // higher positional noise → natural look
       pigment:         0.31,
+      bladeShape:      0.45,  // lanceolate belly — broader mid-blade meadow grasses
+      widestPos:       0.45,
       structuralSeed:  0x72D4A531 >>> 0,
     },
   },
@@ -169,7 +193,7 @@ export const PRESETS = [
       tillerCount:     0.40,
       clumpSpread:     0.35,
       bladeLength:     0.65,  // tall ≈ 1.48 m
-      bladeWidth:      0.65,  // broad blade → half-width ≈ 9.2 mm (bromus can be 15mm wide)
+      bladeWidth:      0.37,  // ≈34 mm — broad blade
       bladeTaper:      0.80,
       arch:            0.30,
       stiffness:       0.65,
@@ -181,6 +205,8 @@ export const PRESETS = [
       jitter:          0.50,
       midribStrength:  0.30,
       pigment:         0.29,
+      bladeShape:      0.55,  // broad bellied blade — robust brome silhouette
+      widestPos:       0.40,
       structuralSeed:  0xC48E7B04 >>> 0,
     },
   },
@@ -196,7 +222,7 @@ export const PRESETS = [
       tillerCount:     0.80,  // very dense clump
       clumpSpread:     0.60,  // wide base
       bladeLength:     0.50,  // moderate-to-tall
-      bladeWidth:      0.45,  // mid-width → half-width ≈ 7.6 mm
+      bladeWidth:      0.25,  // ≈20 mm
       bladeTaper:      0.85,
       arch:            0.55,  // pronounced arch → cascading look
       stiffness:       0.40,
@@ -225,7 +251,7 @@ export const PRESETS = [
       tillerCount:     0.65,
       clumpSpread:     0.50,
       bladeLength:     0.70,  // tall ≈ 1.58 m
-      bladeWidth:      0.40,
+      bladeWidth:      0.25,  // ≈20 mm
       bladeTaper:      0.75,
       arch:            0.75,  // KEY: strong gravitational bow
       stiffness:       0.30,  // flexible → allows droop
@@ -238,6 +264,7 @@ export const PRESETS = [
       midribStrength:  0.25,
       pigment:         0.35,  // warm green
       fanSpread:       0.65,
+      bladeTwist:      0.35,  // gentle spiral — graceful fountain cascade
       structuralSeed:  0x91EAB302 >>> 0,
     },
   },
@@ -253,7 +280,7 @@ export const PRESETS = [
       tillerCount:     0.75,
       clumpSpread:     0.30,
       bladeLength:     0.20,  // short ≈ 0.56 m
-      bladeWidth:      0.22,  // narrow
+      bladeWidth:      0.16,  // ≈13 mm
       bladeTaper:      0.80,
       arch:            0.30,
       stiffness:       0.70,
@@ -264,7 +291,9 @@ export const PRESETS = [
       bladeRaggedness: 0.05,
       jitter:          0.25,
       midribStrength:  0.10,
-      pigment:         0.58,  // blue-grey hue (≈210°)
+      pigment:         0.34,  // green base hue (blue look now comes from wax, not hue)
+      chlorophyll:     0.50,
+      glaucousness:    0.85,  // KEY: heavy waxy blue-grey bloom (Festuca glauca)
       fanSpread:       0.50,
       structuralSeed:  0x1D7C4E89 >>> 0,
     },
@@ -281,7 +310,7 @@ export const PRESETS = [
       tillerCount:     0.55,
       clumpSpread:     0.55,
       bladeLength:     0.88,  // very tall ≈ 1.96 m
-      bladeWidth:      0.80,  // broad ribbon
+      bladeWidth:      0.38,  // ≈36 mm — broad ribbon
       bladeTaper:      0.60,
       arch:            0.55,
       stiffness:       0.50,
@@ -294,6 +323,11 @@ export const PRESETS = [
       midribStrength:  0.30,
       pigment:         0.27,
       seedHead:        0.70,  // prominent plume / seed head
+      inflorescenceType: 0.30, // open golden-angle panicle (plume)
+      spikeletCount:     0.90, // long dense plume
+      grainsPerSpikelet: 0.60,
+      awnLength:         0.20,
+      midEarBulge:       0.40,
       fanSpread:       0.60,
       structuralSeed:  0xF3A04C17 >>> 0,
     },
@@ -312,7 +346,7 @@ export const PRESETS = [
       tillerCount:     0.18,  // few tillers per clump
       clumpSpread:     0.15,  // tight base
       bladeLength:     0.75,  // tall ≈ 1.69 m
-      bladeWidth:      0.40,  // moderate width → half-width ≈ 7.2 mm
+      bladeWidth:      0.29,  // ≈24 mm
       bladeTaper:      0.80,
       arch:            0.15,  // mostly upright
       stiffness:       0.80,  // stiff stem
@@ -324,8 +358,18 @@ export const PRESETS = [
       jitter:          0.30,
       midribStrength:  0.25,
       pigment:         0.25,  // yellow-green wheat hue
+      senescence:      0.60,  // ripe → golden straw
+      chlorophyll:     0.45,
       seedHead:        0.90,  // KEY: prominent seed head / ear
+      inflorescenceType: 0.80, // tight distichous spike (wheat ear)
+      spikeletCount:     0.60, // ~20 spikelets
+      grainsPerSpikelet: 0.60, // ~3–4 grains per spikelet
+      awnLength:         0.35, // short awns
+      midEarBulge:       0.70, // spindle-shaped ear, fattest mid-length
       fanSpread:       0.30,
+      bladeShape:      0.30,  // slight belly, drawn-out flag-leaf tip
+      widestPos:       0.40,
+      veining:         0.80,  // strong dry striations / drying tips (ripe cereal)
       structuralSeed:  0x64B2F715 >>> 0,
     },
   },
@@ -341,7 +385,7 @@ export const PRESETS = [
       tillerCount:     0.20,
       clumpSpread:     0.18,
       bladeLength:     0.68,
-      bladeWidth:      0.38,  // moderate → half-width ≈ 7.0 mm
+      bladeWidth:      0.27,  // ≈22 mm
       bladeTaper:      0.80,
       arch:            0.30,  // slight arch — barley nods gently
       stiffness:       0.70,
@@ -353,7 +397,15 @@ export const PRESETS = [
       jitter:          0.30,
       midribStrength:  0.22,
       pigment:         0.23,  // gold-green
+      senescence:      0.50,  // gold-green ripening
+      chlorophyll:     0.50,
       seedHead:        0.85,
+      inflorescenceType: 0.85, // distichous spike
+      spikeletCount:     0.70,
+      grainsPerSpikelet: 0.40,
+      awnLength:         0.95, // KEY: long barley awns
+      midEarBulge:       0.50,
+      veining:           0.75, // dry striations
       fanSpread:       0.30,
       structuralSeed:  0xA0D93E46 >>> 0,
     },
@@ -369,23 +421,29 @@ export const PRESETS = [
     experimental: false,
     genome: {
       ...GRASS_DEFAULT,
-      tillerCount:     0.12,  // very few tillers (≈2 blades)
+      tillerCount:     0.18,  // a few stalks
       clumpSpread:     0.20,
       bladeLength:     0.90,  // very tall ≈ 1.99 m
-      bladeWidth:      0.70,  // moderately broad → half-width ≈ 9.6 mm (Phragmites ~15mm)
-      bladeTaper:      0.70,  // less taper — ribbon stays broad toward tip
-      arch:            0.10,  // near-upright
-      stiffness:       0.85,  // very stiff
-      verticality:     0.70,
-      curve:           0.05,
-      tipDroop:        0.08,
+      bladeWidth:      0.23,  // thin round cane ≈18 mm dia
+      bladeTaper:      0.35,  // near-parallel cane (does not taper to a needle)
+      arch:            0.08,  // near-upright
+      stiffness:       0.88,  // very stiff stalk
+      verticality:     0.72,
+      curve:           0.04,
+      tipDroop:        0.06,
       colorVariation:  0.10,
-      bladeRaggedness: 0.12,
+      bladeRaggedness: 0.04,  // smooth cane edge
       jitter:          0.35,
-      midribStrength:  0.35,
+      midribStrength:  0.00,  // round stalk has no midrib
+      crossSectionCurl: 0.00, // roundness handles the cross-section
+      stemRoundness:   0.90,  // KEY: thin ROUND stalk/culm, not a flat blade
       pigment:         0.32,
-      fanSpread:       0.25,
-      seedHead:        0.40,  // modest panicle
+      fanSpread:       0.20,
+      seedHead:        0.45,  // terminal plume
+      inflorescenceType: 0.30, // open golden-angle panicle (reed plume)
+      spikeletCount:     0.70,
+      grainsPerSpikelet: 0.40,
+      awnLength:         0.10,
       structuralSeed:  0x2C5F1B08 >>> 0,
     },
   },
@@ -401,7 +459,7 @@ export const PRESETS = [
       tillerCount:     0.60,
       clumpSpread:     0.40,
       bladeLength:     0.45,
-      bladeWidth:      0.40,  // sedge blades are broader than lawn grass → half-width ≈ 7.2 mm
+      bladeWidth:      0.27,  // ≈22 mm — sedge blade
       bladeTaper:      0.80,
       arch:            0.45,  // arching habit
       stiffness:       0.55,
@@ -412,6 +470,7 @@ export const PRESETS = [
       bladeRaggedness: 0.18,
       jitter:          0.50,
       midribStrength:  0.55,  // KEY: pronounced midrib/keel — sedge character
+      crossSectionCurl: 0.65, // deep V-channel cross-section (conduplicate sedge blade)
       pigment:         0.29,
       fanSpread:       0.55,
       seedHead:        0.15,
@@ -430,21 +489,65 @@ export const PRESETS = [
       tillerCount:     0.08,  // very few tillers
       clumpSpread:     0.25,
       bladeLength:     0.95,  // near-maximum height ≈ 2.10 m
-      bladeWidth:      0.55,  // broad → half-width ≈ 8.4 mm (Typha blades ~10-20mm)
-      bladeTaper:      0.60,  // fairly parallel-sided — bulrush stays broad
+      bladeWidth:      0.32,  // round cattail stem ≈28 mm dia
+      bladeTaper:      0.30,  // near-parallel cane
       arch:            0.05,  // nearly vertical
       stiffness:       0.90,  // very stiff upright stems
       verticality:     0.75,
       curve:           0.03,
       tipDroop:        0.05,
       colorVariation:  0.08,
-      bladeRaggedness: 0.10,
+      bladeRaggedness: 0.04,
       jitter:          0.20,
-      midribStrength:  0.20,
+      midribStrength:  0.00,  // round stem — no midrib
+      stemRoundness:   0.95,  // KEY: round cattail/bulrush stalk
       pigment:         0.30,
       fanSpread:       0.20,
       seedHead:        0.60,  // prominent cylindrical flower head
+      inflorescenceType: 0.95, // very tight distichous spike → dense cylinder
+      spikeletCount:     0.95, // long head
+      grainsPerSpikelet: 0.70, // packed
+      awnLength:         0.00, // awnless cattail
+      midEarBulge:       0.50,
       structuralSeed:  0xE82F6AD3 >>> 0,
+    },
+  },
+
+  // Soft rush — leafless cluster of thin ROUND green stalks; tiny side cluster.
+  // Showcases the stem-roundness (leaf↔stalk) axis: no flat blade at all.
+  {
+    id:           'rush',
+    label:        'Soft Rush',
+    category:     'Wetland',
+    experimental: false,
+    genome: {
+      ...GRASS_DEFAULT,
+      tillerCount:     0.55,  // a dense tuft of stalks
+      clumpSpread:     0.35,
+      bladeLength:     0.75,  // tall ≈ 1.7 m
+      bladeWidth:      0.16,  // thin round stalk ≈13 mm dia
+      bladeTaper:      0.45,  // tapers gently toward the tip
+      arch:            0.18,  // slight outward spray
+      stiffness:       0.75,
+      verticality:     0.62,
+      curve:           0.06,
+      tipDroop:        0.10,
+      midribStrength:  0.00,
+      crossSectionCurl: 0.00,
+      stemRoundness:   1.00,  // KEY: fully round, leafless rush stalks
+      bladeShape:      0.00,
+      colorVariation:  0.12,
+      bladeRaggedness: 0.03,
+      jitter:          0.45,
+      veining:         0.25,  // faint longitudinal ridges on the stalk
+      pigment:         0.33,  // mid green
+      fanSpread:       0.55,
+      seedHead:        0.30,  // small lateral flower cluster
+      inflorescenceType: 0.20, // loose panicle
+      spikeletCount:     0.40,
+      grainsPerSpikelet: 0.30,
+      awnLength:         0.00,
+      structuralSeed:  0x4B9C2E57 >>> 0,
     },
   },
 

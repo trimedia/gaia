@@ -75,16 +75,22 @@ function isSchemaValid(genome, schema) {
 
 const EXPECTED_STRUCTURAL = [
   'tillerCount', 'clumpSpread', 'bladeSegments', 'seedHead', 'fanSpread',
+  'inflorescenceType', 'spikeletCount', 'grainsPerSpikelet',
 ];
 
 const EXPECTED_PROPORTIONS = [
   'bladeLength', 'bladeWidth', 'bladeTaper', 'arch', 'curve',
   'stiffness', 'verticality', 'tipDroop',
+  'bladeShape', 'widestPos', 'crossSectionCurl',
+  'bladeTwist', 'stemRoundness', 'awnLength', 'midEarBulge',
+  'bladeLengthMax', 'bladeWidthMax', 'bladeTaperMax', 'archMax', 'tipDroopMax',
 ];
 
 const EXPECTED_COSMETIC = [
   'pigment', 'bladeRaggedness', 'colorVariation', 'jitter',
-  'midribStrength', 'structuralSeed',
+  'midribStrength', 'veining',
+  'chlorophyll', 'senescence', 'anthoPropensity', 'glaucousness',
+  'structuralSeed',
 ];
 
 const EXPECTED_RANGES = {
@@ -94,6 +100,9 @@ const EXPECTED_RANGES = {
   bladeSegments:   [0, 1],
   seedHead:        [0, 1],
   fanSpread:       [0, 1],
+  inflorescenceType: [0, 1],
+  spikeletCount:     [0, 1],
+  grainsPerSpikelet: [0, 1],
   // Proportions
   bladeLength:     [0, 1],
   bladeWidth:      [0, 1],
@@ -103,12 +112,29 @@ const EXPECTED_RANGES = {
   stiffness:       [0, 1],
   verticality:     [0, 1],
   tipDroop:        [0, 1],
+  bladeLengthMax:  [0, 1],
+  bladeWidthMax:   [0, 1],
+  bladeTaperMax:   [0, 1],
+  archMax:         [0, 1],
+  tipDroopMax:     [0, 1],
+  bladeShape:      [0, 1],
+  widestPos:       [0, 1],
+  crossSectionCurl: [0, 1],
+  bladeTwist:      [0, 1],
+  stemRoundness:   [0, 1],
+  awnLength:       [0, 1],
+  midEarBulge:     [0, 1],
   // Cosmetic (continuous)
   pigment:         [0, 1],
   bladeRaggedness: [0, 1],
   colorVariation:  [0, 1],
   jitter:          [0, 1.5],
   midribStrength:  [0, 1],
+  veining:         [0, 1],
+  chlorophyll:     [0, 1],
+  senescence:      [0, 1],
+  anthoPropensity: [0, 1],
+  glaucousness:    [0, 1],
 };
 
 // ---------------------------------------------------------------------------
@@ -117,12 +143,12 @@ const EXPECTED_RANGES = {
 
 describe('GRASS_SCHEMA — gene catalogue', () => {
 
-  it('schema has exactly 19 genes', () => {
-    assert.equal(Object.keys(GRASS_SCHEMA).length, 19,
-      `expected 19 genes, got ${Object.keys(GRASS_SCHEMA).length}: ${Object.keys(GRASS_SCHEMA).join(', ')}`);
+  it('schema has exactly 39 genes', () => {
+    assert.equal(Object.keys(GRASS_SCHEMA).length, 39,
+      `expected 39 genes, got ${Object.keys(GRASS_SCHEMA).length}: ${Object.keys(GRASS_SCHEMA).join(', ')}`);
   });
 
-  it('all 5 structural genes present with correct tier/kind/range', () => {
+  it('all 8 structural genes present with correct tier/kind/range', () => {
     for (const field of EXPECTED_STRUCTURAL) {
       const gene = GRASS_SCHEMA[field];
       assert.ok(gene, `${field} missing from GRASS_SCHEMA`);
@@ -137,7 +163,7 @@ describe('GRASS_SCHEMA — gene catalogue', () => {
     }
   });
 
-  it('all 8 proportions genes present with correct tier/kind/range', () => {
+  it('all 20 proportions genes present with correct tier/kind/range', () => {
     for (const field of EXPECTED_PROPORTIONS) {
       const gene = GRASS_SCHEMA[field];
       assert.ok(gene, `${field} missing from GRASS_SCHEMA`);
@@ -152,7 +178,7 @@ describe('GRASS_SCHEMA — gene catalogue', () => {
     }
   });
 
-  it('all 6 cosmetic genes present with correct tier/kind/range', () => {
+  it('all 11 cosmetic genes present with correct tier/kind/range', () => {
     for (const field of EXPECTED_COSMETIC) {
       const gene = GRASS_SCHEMA[field];
       assert.ok(gene, `${field} missing from GRASS_SCHEMA`);
@@ -273,9 +299,14 @@ describe('clampField — per-gene clamping', () => {
   // All [0,1] genes
   const UNIT_GENES = [
     'tillerCount', 'clumpSpread', 'bladeSegments', 'seedHead', 'fanSpread',
+    'inflorescenceType', 'spikeletCount', 'grainsPerSpikelet',
     'bladeLength', 'bladeWidth', 'bladeTaper', 'arch', 'curve',
     'stiffness', 'verticality', 'tipDroop',
-    'pigment', 'bladeRaggedness', 'colorVariation', 'midribStrength',
+    'bladeShape', 'widestPos', 'crossSectionCurl',
+    'bladeTwist', 'stemRoundness', 'awnLength', 'midEarBulge',
+    'bladeLengthMax', 'bladeWidthMax', 'bladeTaperMax', 'archMax', 'tipDroopMax',
+    'pigment', 'bladeRaggedness', 'colorVariation', 'midribStrength', 'veining',
+    'chlorophyll', 'senescence', 'anthoPropensity', 'glaucousness',
   ];
 
   for (const field of UNIT_GENES) {

@@ -26,6 +26,10 @@
 //   opts: {
 //     bladeWidth      {number}  base half-width in world units (default: 0.015)
 //     bladeTaper      {number}  [0,1] width falloff toward tip (0=parallel, 1=needle)
+//     bladeShape      {number}  [0,1] belly amount; 0=straight taper (identity)
+//     widestPos       {number}  [0,1] position of max width when bladeShape>0
+//     crossSectionCurl{number}  [0,1] width-wise channel cup; 0=flat (identity)
+//     bladeTwist      {number}  [0,1] spiral along length; 0=untwisted (identity)
 //     midribStrength  {number}  [0,1] midrib crease depth; 0=flat ribbon
 //     bladeRaggedness {number}  [0,1] edge jitter amplitude (default: 0)
 //     radialSegsFor   {function} ignored (reserved for future use)
@@ -104,6 +108,21 @@ function perpTo(dir) {
   return v3norm(v3cross(dir, [0, 0, 1]));
 }
 
+// Rodrigues rotation of a vector about a unit axis by angle (radians).
+function rotateAxis(v, axis, angle) {
+  const c = Math.cos(angle), s = Math.sin(angle);
+  const d = v3dot(axis, v);
+  const cr = v3cross(axis, v);
+  return [
+    v[0] * c + cr[0] * s + axis[0] * d * (1 - c),
+    v[1] * c + cr[1] * s + axis[1] * d * (1 - c),
+    v[2] * c + cr[2] * s + axis[2] * d * (1 - c),
+  ];
+}
+
+// Maximum blade twist (radians) at bladeTwist=1 — ~1.25 turns along the blade.
+const MAX_TWIST = Math.PI * 2.5;
+
 // Parallel-transport frame: rotate {u, v} to align with newTangent.
 // Returns updated [u, v] (both unit, orthogonal to newTangent).
 function transportFrame(prevTangent, newTangent, u, v) {
@@ -135,14 +154,63 @@ function transportFrame(prevTangent, newTangent, u, v) {
 }
 
 // ---------------------------------------------------------------------------
-// Blade-width scale at a given node along a chain.
+// Blade silhouette: half-width along a chain.
 //
-// bladeWidth:  base half-width in world units.
-// bladeTaper:  [0,1] — 0 = parallel-sided, 1 = needle tip (zero at tip).
-// swayBase:    [0,1] normalized height along the blade (0=base, 1=tip).
+// bladeWidth:   base half-width in WORLD units (viewer maps the gene via
+//               bladeWidthGeneToWorld; tests pass world half-widths directly).
+// bladeTaper:   [0,1] — tip sharpness only. The blade is parallel-sided up to
+//               TIP_START (~0.6) then narrows in the upper portion: 0 = blunt
+//               (stays full to the top), 1 = narrows to a fine point. NOT a
+//               full-length triangle.
+// swayBase:     [0,1] normalized height along the blade (0=base, 1=tip).
+// bladeShape:   [0,1] — belly amount. 0 = straight taper; 1 = bellied/lanceolate
+//               profile peaking at widestPos.
+// widestPos:    [0,1] — along-blade position of maximum width (active when
+//               bladeShape > 0). 0=base, 0.5=mid (lanceolate), 1=near tip.
 // ---------------------------------------------------------------------------
-function widthAt(bladeWidth, bladeTaper, swayBase) {
-  return bladeWidth * (1 - bladeTaper * swayBase);
+// Maximum fractional width gain at the belly when bladeShape=1.
+const BELLY_MAX = 0.9;
+
+// Map the bladeWidth GENE [0,1] → a world half-width. Power curve so most of the
+// slider is fine grass (~2 mm wide) and the top opens to broad strap/leaf
+// (~17 cm wide, broadleaf). Exported so the VIEWER maps once at the render
+// boundary; the mesher works in world units (tests pass world half-widths).
+// Tuned for VISIBILITY (not strict botanical realism): a ~2 mm hairline blade is
+// near-invisible at clump scale, so the low end is lifted. Spans fine grass
+// (~8 mm wide) → broad strap/iris/hosta leaf (~15 cm wide).
+const BLADE_HW_MIN = 0.0040;   // 4 mm half-width  → 8 mm wide (finest)
+const BLADE_HW_MAX = 0.1000;   // 10 cm half-width → 20 cm wide (broadleaf)
+const BLADE_HW_POW = 2.0;
+export function bladeWidthGeneToWorld(gene) {
+  const g = gene < 0 ? 0 : gene > 1 ? 1 : gene;
+  return BLADE_HW_MIN + Math.pow(g, BLADE_HW_POW) * (BLADE_HW_MAX - BLADE_HW_MIN);
+}
+
+// Grass blades hold ~constant width for most of their length and narrow to a
+// point only in the upper portion (NOT a triangle/spike from the base). The
+// taper lives above TIP_START and is quadratic, so it stays near-full early and
+// concentrates the narrowing toward the tip.
+const TIP_START = 0.6;
+
+function widthAt(bladeWidth, bladeTaper, swayBase, bladeShape, widestPos) {
+  const t = swayBase;
+  // Parallel below TIP_START; above it, bladeTaper sets tip sharpness:
+  //   0 → blunt/parallel to the top, 1 → narrows to a fine point.
+  let frac = 1.0;
+  if (t > TIP_START) {
+    const u = (t - TIP_START) / (1 - TIP_START);       // 0 → 1 across the tip region
+    frac = 1 - bladeTaper * u * u;
+  }
+  // Belly: smooth single-peak hump at widestPos. Remap t so the peak sits at
+  // widestPos; sin(PI*tt) is 0 at both ends and 1 at the peak, with zero slope
+  // at the peak → C1 there (no visible width "corner").
+  if (bladeShape > 0) {
+    const p  = Math.min(0.95, Math.max(0.05, widestPos));
+    const tt = t <= p ? 0.5 * t / p : 0.5 + 0.5 * (t - p) / (1 - p);
+    const hump = Math.sin(Math.PI * tt);
+    frac *= 1 + bladeShape * BELLY_MAX * hump;
+  }
+  return bladeWidth * Math.max(frac, 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -222,9 +290,21 @@ export function buildBladeGeometry(graph, opts = {}) {
   const bladeTaper     = opts.bladeTaper     !== undefined ? opts.bladeTaper     : 0;
   const midribStrength = opts.midribStrength !== undefined ? opts.midribStrength : 0;
   const bladeRaggedness = opts.bladeRaggedness !== undefined ? opts.bladeRaggedness : 0;
+  // Silhouette profile (identity defaults reproduce the linear-taper ribbon).
+  const bladeShape   = opts.bladeShape   !== undefined ? opts.bladeShape   : 0;
+  const widestPos    = opts.widestPos    !== undefined ? opts.widestPos    : 0.5;
+  // Cross-section curl: cups the blade across its width (0 = flat ribbon).
+  const crossSectionCurl = opts.crossSectionCurl !== undefined ? opts.crossSectionCurl : 0;
+  // Blade twist: spirals the ribbon along its length (0 = untwisted, identity).
+  const bladeTwist = opts.bladeTwist !== undefined ? opts.bladeTwist : 0;
+  const totalTwist = bladeTwist * MAX_TWIST;
+  // Stem roundness: 0 = flat blade (ribbon), >0 = closed round TUBE / culm.
+  const stemRoundness = opts.stemRoundness !== undefined ? opts.stemRoundness : 0;
+  const useTube = stemRoundness > 0;
 
-  // Use midrib vertices if midribStrength > 0.
-  const useMidrib = midribStrength > 0;
+  // Use the 3-vertex (LEFT/MIDRIB/RIGHT) ring when there is a central crease OR
+  // a cross-section curl; otherwise a flat 2-vertex ribbon. (Ignored for tubes.)
+  const useMidrib = midribStrength > 0 || crossSectionCurl > 0;
 
   // Guard: empty graph.
   if (!bones || bones.length === 0 || !nodes || nodes.length === 0) {
@@ -289,6 +369,9 @@ export function buildBladeGeometry(graph, opts = {}) {
   // Chain of 1 node (degenerate): no geometry.
   // -------------------------------------------------------------------------
   const vertsPerRing = useMidrib ? 3 : 2;
+  // Round-tube cross-section segment count (when useTube). 8 reads as round while
+  // staying cheap; a flat blade is far fewer verts, so tubes are opt-in per genome.
+  const TUBE_SEGS = 8;
 
   let totalV = 0;
   let totalT = 0;
@@ -296,11 +379,17 @@ export function buildBladeGeometry(graph, opts = {}) {
   for (const chain of chains) {
     const N = chain.length;
     if (N < 2) continue;
-    totalV += vertsPerRing * (N - 1) + 1;  // non-tip rings + apex
-    if (useMidrib) {
-      totalT += N >= 3 ? 4 * (N - 2) + 2 : 2;  // quads + tip fan
+    if (useTube) {
+      // Closed K-gon rings + apex; K quads per gap (2K tris) + K-tri tip cone.
+      totalV += TUBE_SEGS * (N - 1) + 1;
+      totalT += 2 * TUBE_SEGS * (N - 2) + TUBE_SEGS;
     } else {
-      totalT += 2 * (N - 1) - 1;  // quad tris + 1 tip tri (no coplanar reverse)
+      totalV += vertsPerRing * (N - 1) + 1;  // non-tip rings + apex
+      if (useMidrib) {
+        totalT += N >= 3 ? 4 * (N - 2) + 2 : 2;  // quads + tip fan
+      } else {
+        totalT += 2 * (N - 1) - 1;  // quad tris + 1 tip tri (no coplanar reverse)
+      }
     }
   }
 
@@ -368,6 +457,116 @@ export function buildBladeGeometry(graph, opts = {}) {
     const structuralSeed = (graph.meta && graph.meta.structuralSeed) ? graph.meta.structuralSeed : ci;
     const cseed = bladeColorSeed(ci, structuralSeed);
 
+    // Per-blade width/taper: the base node may carry sampled vWidth (GENE space)
+    // / vTaper from the per-blade range. Map vWidth → world here (the mapping
+    // lives in this module); fall back to the global opts when absent (tests).
+    const _bn = nodes[chain[0]];
+    const cw  = (_bn && _bn.vWidth !== undefined) ? bladeWidthGeneToWorld(_bn.vWidth) : bladeWidth;
+    const ct  = (_bn && _bn.vTaper !== undefined) ? _bn.vTaper : bladeTaper;
+
+    // =======================================================================
+    // ROUND STALK / CULM (stemRoundness > 0): emit a closed tapered TUBE.
+    //
+    // Same parallel-transport + twist frame walk as the ribbon, but each node
+    // becomes a closed elliptical ring (width = halfW along frameU, thickness =
+    // halfW·(0.12 + 0.88·stemRoundness) along frameNorm) → flat-ish stem at low
+    // roundness, a round cane at 1. Normals are the ellipse outward normals.
+    // =======================================================================
+    if (useTube) {
+      let tube_tangent = v3norm(v3sub(nodes[chain[1]].pos, nodes[chain[0]].pos));
+      if (v3len(tube_tangent) < 0.5) tube_tangent = [0, 1, 0];
+      // Seed an arbitrary stable frame (a stalk has no broad face to orient).
+      let tFrameU = perpTo(tube_tangent);
+      let tFrameN = v3norm(v3cross(tube_tangent, tFrameU));
+      tFrameU     = v3norm(v3cross(tFrameN, tube_tangent));
+      let tPrevTan = tube_tangent;
+
+      const tRingBases = new Int32Array(N - 1);
+      let tArc = 0, tTotalArc = 0;
+      for (let ni = 0; ni < N - 1; ni++) tTotalArc += v3len(v3sub(nodes[chain[ni + 1]].pos, nodes[chain[ni]].pos));
+      if (tTotalArc < 1e-12) tTotalArc = 1;
+
+      for (let ni = 0; ni < N - 1; ni++) {
+        const node    = nodes[chain[ni]];
+        const swayVal = node.swayBase !== undefined ? node.swayBase : ni / (N - 1);
+        const aoVal   = aoAt(swayVal);
+        const halfW   = Math.max(1e-5, widthAt(cw, ct, swayVal, bladeShape, widestPos));
+        const thick   = Math.max(1e-5, halfW * (0.12 + 0.88 * stemRoundness));
+
+        if (ni > 0) {
+          const prevPos = nodes[chain[ni - 1]].pos;
+          const curPos  = node.pos;
+          let newTan;
+          if (ni < N - 1) {
+            const nextPos  = nodes[chain[ni + 1]].pos;
+            const incoming = v3norm(v3sub(curPos, prevPos));
+            const outgoing = v3norm(v3sub(nextPos, curPos));
+            const avg = v3norm([incoming[0] + outgoing[0], incoming[1] + outgoing[1], incoming[2] + outgoing[2]]);
+            newTan = v3len(avg) < 0.5 ? incoming : v3norm(avg);
+          } else {
+            newTan = v3norm(v3sub(curPos, prevPos));
+          }
+          [tFrameU, tFrameN] = transportFrame(tPrevTan, newTan, tFrameU, tFrameN);
+          tPrevTan = newTan;
+          if (totalTwist !== 0) {
+            const swPrev = nodes[chain[ni - 1]].swayBase !== undefined ? nodes[chain[ni - 1]].swayBase : (ni - 1) / (N - 1);
+            const dRoll  = totalTwist * (swayVal - swPrev);
+            tFrameU = v3norm(rotateAxis(tFrameU, tPrevTan, dRoll));
+            tFrameN = v3norm(rotateAxis(tFrameN, tPrevTan, dRoll));
+          }
+          tArc += v3len(v3sub(node.pos, nodes[chain[ni - 1]].pos));
+        }
+
+        const vCoord = tArc / tTotalArc;
+        const pos = node.pos;
+        tRingBases[ni] = vCursor;
+        for (let j = 0; j < TUBE_SEGS; j++) {
+          const phi = (j / TUBE_SEGS) * Math.PI * 2;
+          const cu = Math.cos(phi), sv = Math.sin(phi);
+          const ox = cu * halfW, on = sv * thick;
+          // Ellipse outward normal ∝ (cosφ·thick, sinφ·halfW) in (U, N).
+          const nrm = v3norm([
+            tFrameU[0] * cu * thick + tFrameN[0] * sv * halfW,
+            tFrameU[1] * cu * thick + tFrameN[1] * sv * halfW,
+            tFrameU[2] * cu * thick + tFrameN[2] * sv * halfW,
+          ]);
+          writeVertex(
+            pos[0] + tFrameU[0] * ox + tFrameN[0] * on,
+            pos[1] + tFrameU[1] * ox + tFrameN[1] * on,
+            pos[2] + tFrameU[2] * ox + tFrameN[2] * on,
+            nrm[0], nrm[1], nrm[2],
+            j / TUBE_SEGS, vCoord, aoVal, swayVal, cseed
+          );
+        }
+      }
+
+      // Apex at the tip node.
+      const tTipNode = nodes[chain[N - 1]];
+      const tTipSway = tTipNode.swayBase !== undefined ? tTipNode.swayBase : 1.0;
+      const apex = writeVertex(
+        tTipNode.pos[0], tTipNode.pos[1], tTipNode.pos[2],
+        tPrevTan[0], tPrevTan[1], tPrevTan[2],
+        0.5, 1.0, aoAt(tTipSway), tTipSway, cseed
+      );
+
+      // Closed-tube quads between consecutive rings.
+      for (let r = 0; r < N - 2; r++) {
+        const rb0 = tRingBases[r], rb1 = tRingBases[r + 1];
+        for (let j = 0; j < TUBE_SEGS; j++) {
+          const j2 = (j + 1) % TUBE_SEGS;
+          emitTri(rb0 + j, rb0 + j2, rb1 + j2);
+          emitTri(rb0 + j, rb1 + j2, rb1 + j);
+        }
+      }
+      // Tip cone from the last ring to the apex.
+      const rbLast = tRingBases[N - 2];
+      for (let j = 0; j < TUBE_SEGS; j++) {
+        const j2 = (j + 1) % TUBE_SEGS;
+        emitTri(rbLast + j, rbLast + j2, apex);
+      }
+      continue;
+    }
+
     // Compute the initial tangent from the first two nodes.
     let tangent = v3norm(v3sub(nodes[chain[1]].pos, nodes[chain[0]].pos));
     if (v3len(tangent) < 0.5) tangent = [0, 1, 0];
@@ -428,7 +627,7 @@ export function buildBladeGeometry(graph, opts = {}) {
       const node     = nodes[nodeIdx];
       const swayVal  = node.swayBase !== undefined ? node.swayBase : ni / (N - 1);
       const aoVal    = aoAt(swayVal);
-      const halfW    = Math.max(1e-5, widthAt(bladeWidth, bladeTaper, swayVal));
+      const halfW    = Math.max(1e-5, widthAt(cw, ct, swayVal, bladeShape, widestPos));
 
       // Update parallel-transport frame (after the first node).
       if (ni > 0) {
@@ -447,6 +646,15 @@ export function buildBladeGeometry(graph, opts = {}) {
 
         [frameU, frameNorm] = transportFrame(prevTangent, newTangent, frameU, frameNorm);
         prevTangent = newTangent;
+
+        // Blade twist: roll the frame about the chain tangent, accumulating with
+        // height so the ribbon spirals (base untwisted → tip fully twisted).
+        if (totalTwist !== 0) {
+          const swPrev = nodes[chain[ni - 1]].swayBase !== undefined ? nodes[chain[ni - 1]].swayBase : (ni - 1) / (N - 1);
+          const dRoll  = totalTwist * (swayVal - swPrev);
+          frameU    = v3norm(rotateAxis(frameU,    prevTangent, dRoll));
+          frameNorm = v3norm(rotateAxis(frameNorm, prevTangent, dRoll));
+        }
 
         arcLen += v3len(v3sub(curPos, prevPos));
       }
@@ -483,25 +691,44 @@ export function buildBladeGeometry(graph, opts = {}) {
 
       ringBases[ni] = vCursor;
 
-      // Compute per-vertex normals with up-bias and cross-blade fan.
+      // Compute per-vertex normals.
       // widthT: -1 = left edge, 0 = centre (midrib), +1 = right edge.
-      const nLeft   = bladeNormal(frameNorm, frameU, -1);
-      const nCentre = bladeNormal(frameNorm, frameU,  0);
-      const nRight  = bladeNormal(frameNorm, frameU, +1);
+      //
+      // crossSectionCurl > 0 cups the blade into a parabolic channel along its
+      // width: edges lifted toward +frameNorm, centre flat. The surface normal
+      // of the parabola h(u)=curl*halfW*u² is N(u) ∝ frameNorm - 2*curl*u*frameU,
+      // so the edge normals tilt INWARD (toward the centre) — concave shading
+      // that reads as a 3-D fold instead of a flat card. When curl=0 we keep the
+      // original gentle convex fan (bladeNormal) so flat/midrib blades are
+      // byte-identical to before.
+      let nLeft, nCentre, nRight;
+      if (crossSectionCurl > 0) {
+        const k = 2 * crossSectionCurl; // parabola edge slope (u=±1)
+        nLeft   = v3norm([frameNorm[0] + k * frameU[0], frameNorm[1] + k * frameU[1], frameNorm[2] + k * frameU[2]]);
+        nCentre = v3norm([frameNorm[0], frameNorm[1], frameNorm[2]]);
+        nRight  = v3norm([frameNorm[0] - k * frameU[0], frameNorm[1] - k * frameU[1], frameNorm[2] - k * frameU[2]]);
+      } else {
+        nLeft   = bladeNormal(frameNorm, frameU, -1);
+        nCentre = bladeNormal(frameNorm, frameU,  0);
+        nRight  = bladeNormal(frameNorm, frameU, +1);
+      }
 
       if (useMidrib) {
-        // Midrib vertex: at node.pos, but with a crease offset along face normal
-        // (sinks the midrib slightly inward, creating the V-fold crease).
-        // The crease depth is midribStrength * halfW.
+        // Midrib vertex: at node.pos, sunk along -frameNorm by the crease depth
+        // (V-fold). Edges are lifted along +frameNorm by the cross-section curl,
+        // so centre-sink + edge-lift together form the channel/gutter.
         const creaseDepth = midribStrength * halfW;
+        const curlLift    = crossSectionCurl * halfW;
         const mx = pos[0] - creaseDepth * frameNorm[0];
         const my = pos[1] - creaseDepth * frameNorm[1];
         const mz = pos[2] - creaseDepth * frameNorm[2];
 
-        // LEFT, MIDRIB, RIGHT
-        writeVertex(lx, ly, lz,  nLeft[0],   nLeft[1],   nLeft[2],   0.0, vCoord, aoVal, swayVal, cseed);
+        // LEFT, MIDRIB, RIGHT — edges lifted by curlLift along +frameNorm.
+        writeVertex(lx + curlLift * frameNorm[0], ly + curlLift * frameNorm[1], lz + curlLift * frameNorm[2],
+                    nLeft[0],   nLeft[1],   nLeft[2],   0.0, vCoord, aoVal, swayVal, cseed);
         writeVertex(mx, my, mz,  nCentre[0], nCentre[1], nCentre[2], 0.5, vCoord, aoVal, swayVal, cseed);
-        writeVertex(rx, ry, rz,  nRight[0],  nRight[1],  nRight[2],  1.0, vCoord, aoVal, swayVal, cseed);
+        writeVertex(rx + curlLift * frameNorm[0], ry + curlLift * frameNorm[1], rz + curlLift * frameNorm[2],
+                    nRight[0],  nRight[1],  nRight[2],  1.0, vCoord, aoVal, swayVal, cseed);
       } else {
         // LEFT, RIGHT
         writeVertex(lx, ly, lz,  nLeft[0],  nLeft[1],  nLeft[2],  0.0, vCoord, aoVal, swayVal, cseed);
@@ -658,40 +885,69 @@ attribute float aColorJitter;
 `;
 
 const COLOR_UNIFORM_DECLS = /* glsl */`
-uniform float uPigment;
+uniform float uChlorophyllVigor;
+uniform float uSenescence;
+uniform float uAnthoTint;
+uniform float uGlaucousness;
+uniform float uSpeciesHue;
+uniform float uStarWarm;
+uniform float uStarDark;
 uniform float uColorVariation;
 `;
 
-// bladeColorTint — linear RGB albedo, natural lawn/meadow palette.
+// bladeColorTint — CONDITION-DRIVEN pigment stack, in LINEAR RGB.
 //
-// Parameters:
-//   seed        — per-blade colorSeed in [0,1], drives per-blade multiplier variation.
-//   swayFrac    — per-vertex swayFactor in [0,1]: 0=base, 1=tip, drives tip gradient.
-//   clumpJitter — aColorJitter instanced float (default 0 when absent), signed [-1,1],
-//                 applies a small per-clump multiplier so neighbouring clumps differ.
+// Layers (matching genome.js computeColorAxes + colorRamp.colorStackRGB):
+//   base green (chlorophyll vigour) → senescence (gold→straw) → anthocyanin (red
+//   over residual green = bronze) → glaucous (blue-grey wax) → species hue + star
+//   shift → per-blade & per-clump variation → base→tip gradient.
+// Anchor colors are the dossier's sRGB swatches converted to LINEAR (renderer is
+// LinearSRGBColorSpace; OutputPass does the single sRGB encode).
 //
-// Base colour: linear vec3(0.10, 0.22, 0.07) — dark green.
-// Tip colour:  linear vec3(0.20, 0.30, 0.10) — lighter yellow-green.
-// Per-blade variation: small multiplicative offset from colorSeed × uColorVariation.
-// Per-clump variation: small multiplicative offset from aColorJitter.
+// Identity (vigor≈0.6, senescence/antho/glaucous=0, speciesHue≈0.30, starWarm=0,
+// starDark=1) ≈ today's healthy green.
 const COLOR_FUNCTION_GLSL = /* glsl */`
 vec3 bladeColorTint(float seed, float swayFrac, float clumpJitter) {
-    // Linear base → tip gradient (RGB, no HSL conversion needed).
-    vec3 baseCol = vec3(0.10, 0.22, 0.07);
-    vec3 tipCol  = vec3(0.20, 0.30, 0.10);
-    vec3 albedo  = mix(baseCol, tipCol, swayFrac);
+    // Linear-RGB pigment anchors.
+    vec3 PALE  = vec3(0.272, 0.422, 0.103);   // pale yellow-green (low vigour)
+    vec3 DEEP  = vec3(0.017, 0.106, 0.017);   // deep saturated green (high vigour)
+    vec3 GOLD  = vec3(0.681, 0.580, 0.066);   // senescent gold
+    vec3 STRAW = vec3(0.508, 0.373, 0.160);   // dormant straw/tan
+    vec3 ANTHO = vec3(0.260, 0.033, 0.064);   // anthocyanin red/purple
+    vec3 GLAUC = vec3(0.117, 0.225, 0.476);   // glaucous blue-grey wax
 
-    // Per-blade multiplier: small spread around 1.0 driven by colorSeed.
-    // Scaled by uColorVariation so the spread can be dialled in from the UI.
-    float bladeHueDelta = (seed - 0.5) * uColorVariation * 0.10;
-    albedo *= 1.0 + bladeHueDelta;
+    // 0. Base green from chlorophyll vigour.
+    vec3 col = mix(PALE, DEEP, uChlorophyllVigor);
 
-    // Per-clump multiplier: aColorJitter in [-1,1] mapped to a ±0.05 offset.
-    float jitterClamped = clamp(clumpJitter, -1.0, 1.0);
-    float clumpHueDelta = jitterClamped * 0.05;
-    albedo *= 1.0 + clumpHueDelta;
+    // 1. Senescence: green → gold → straw (two-stage).
+    col = mix(col, GOLD,  smoothstep(0.0, 0.6, uSenescence));
+    col = mix(col, STRAW, smoothstep(0.6, 1.0, uSenescence));
 
-    return max(albedo, vec3(0.0));
+    // 2. Anthocyanin overlay (red over whatever remains → bronze/burgundy).
+    col = mix(col, ANTHO, uAnthoTint * 0.7);
+
+    // 3. Glaucous waxy surface: blend toward blue-grey + a small blue tilt.
+    col = mix(col, GLAUC, 0.45 * uGlaucousness);
+    col += uGlaucousness * 0.05 * vec3(0.35, 0.60, 1.0);
+
+    // 4. Species hue (constrained): lower → yellower, higher → bluer-green.
+    float sh = uSpeciesHue - 0.30;
+    col = mix(col, GOLD,  max(0.0, -sh) * 0.25);
+    col = mix(col, GLAUC, max(0.0,  sh) * 0.20);
+
+    // 5. Star spectrum (speculative; no-op at Sun): hot → yellower, cool → redder + darker.
+    col = mix(col, GOLD,  max(0.0,  uStarWarm) * 0.40);
+    col = mix(col, ANTHO, max(0.0, -uStarWarm) * 0.50);
+    col *= uStarDark;
+
+    // 6. Per-blade + per-clump variation.
+    col *= 1.0 + (seed - 0.5) * uColorVariation * 0.10;
+    col *= 1.0 + clamp(clumpJitter, -1.0, 1.0) * 0.05;
+
+    // 7. Base→tip gradient: tips slightly lighter and yellower.
+    col = mix(col, col * vec3(1.10, 1.08, 0.92), swayFrac * 0.5);
+
+    return max(col, vec3(0.0));
 }
 `;
 
@@ -736,6 +992,105 @@ vSwayFactor = aSwayFactor;
 // The fragment shader declaration block (inserted at #include <common>):
 const GRASS_FRAG_DECL = /* glsl */`
 varying float vSwayFactor;
+uniform float uGlaucousness;
+`;
+
+// ---------------------------------------------------------------------------
+// PROCEDURAL BLADE TEXTURE (Phase 3) — math-derived, no image map.
+//
+// Computed per-fragment from (u, v):
+//   u = vBladeU      across the blade width [0,1], 0.5 = midrib
+//   v = vSwayFactor  along the blade [0,1], 0 = base, 1 = tip
+// Layers: longitudinal parallel veins (periodic in u, converging toward the tip),
+// a midrib darkening band (cubicPulse at u=0.5), anisotropic fBM fibre mottle
+// (high frequency along v), and tip/edge dryness toward a straw colour.
+// Strength is driven by the `uVeining` uniform (0 = smooth, identity).
+//
+// uVeining=0 makes every term a no-op (mix(1.0, x, 0)=1, dry*0=0), so the blade
+// is byte-equivalent to the pre-texture albedo.
+// ---------------------------------------------------------------------------
+
+// Vertex: per-vertex across-width coordinate forwarded to the fragment shader.
+const BLADE_TEX_VERT_DECL = /* glsl */`
+attribute float aBladeU;
+varying float vBladeU;
+`;
+
+const BLADE_TEX_VERT_WRITE = /* glsl */`
+vBladeU = aBladeU;
+`;
+
+// Fragment: varying + uniform + deterministic value-noise helpers (g-prefixed to
+// avoid colliding with three's common.glsl rand()/etc).
+const BLADE_TEX_FRAG_DECL = /* glsl */`
+varying float vBladeU;
+uniform float uVeining;
+
+float gHash21(vec2 p) {
+  p = fract(p * vec2(123.34, 456.21));
+  p += dot(p, p + 45.32);
+  return fract(p.x * p.y);
+}
+float gNoise(vec2 p) {
+  vec2 i = floor(p);
+  vec2 f = fract(p);
+  vec2 u = f * f * (3.0 - 2.0 * f);
+  float a = gHash21(i);
+  float b = gHash21(i + vec2(1.0, 0.0));
+  float c = gHash21(i + vec2(0.0, 1.0));
+  float d = gHash21(i + vec2(1.0, 1.0));
+  return mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+}
+float gFbm(vec2 p) {
+  float s = 0.0;
+  float a = 0.5;
+  for (int i = 0; i < 4; i++) { s += a * gNoise(p); p *= 2.0; a *= 0.5; }
+  return s;
+}
+float gCubicPulse(float c, float w, float x) {
+  x = abs(x - c);
+  if (x > w) return 0.0;
+  x /= w;
+  return 1.0 - x * x * (3.0 - 2.0 * x);
+}
+`;
+
+// Fragment: modulate the (already vColor-tinted) diffuseColor. Injected AFTER
+// #include <color_fragment>.
+const BLADE_TEX_FRAG_APPLY = /* glsl */`
+// --- procedural blade texture (veins + midrib + fibre + dryness) ---
+{
+  float u   = vBladeU;
+  float v   = vSwayFactor;
+  float amt = uVeining;
+
+  // Longitudinal parallel veins, converging toward the tip; faded into the
+  // basal sheath. Domain-warped slightly by fbm so they aren't mechanical.
+  float nv     = 7.0 + 10.0 * amt;
+  float nvT    = nv * (1.0 - 0.30 * v);
+  float stripe = 0.5 + 0.5 * sin(6.2831853 * nvT * u + 1.5 * gFbm(vec2(u * 4.0, v * 6.0)));
+  stripe       = pow(clamp(stripe, 0.0, 1.0), 2.0);
+  stripe       = mix(1.0, 1.0 - 0.16 * amt, stripe);
+  stripe       = mix(1.0, stripe, smoothstep(0.04, 0.18, v));
+
+  // Midrib darkening band down the centre, wider near the base.
+  float midrib    = gCubicPulse(0.5, 0.06 + 0.05 * (1.0 - v), u);
+  float midribMul = mix(1.0, 0.78, midrib * amt);
+
+  // Lengthwise fibre mottle (anisotropic: high frequency along the blade).
+  float fibre    = gFbm(vec2(u * 3.0, v * 22.0));
+  float fibreMul = mix(1.0, mix(0.92, 1.08, fibre), 0.5 * amt);
+
+  diffuseColor.rgb *= stripe * midribMul * fibreMul;
+
+  // Tip + edge dryness → straw colour.
+  float edge = smoothstep(0.78, 1.0, abs(u - 0.5) * 2.0);
+  float tip  = smoothstep(0.80, 1.0, v);
+  float dry  = max(edge, tip) * amt * (0.6 + 0.4 * gFbm(vec2(u * 2.0, v * 8.0)));
+  vec3  straw = vec3(0.34, 0.27, 0.10);
+  diffuseColor.rgb = mix(diffuseColor.rgb, straw, clamp(dry * 0.5, 0.0, 0.55));
+}
+// --- end procedural blade texture ---
 `;
 
 // The normal-bias injection (after #include <normal_fragment_begin>):
@@ -790,6 +1145,14 @@ const GRASS_LIGHTING_GLSL = /* glsl */`
 }
 #endif
 // --- end grass wrap diffuse + translucency ---
+
+// --- glaucous waxy sheen: faint cool Fresnel rim (only when glaucous) ---
+{
+    vec3 _Vg = normalize(vViewPosition);
+    float _fres = pow(1.0 - max(dot(normalize(normal), _Vg), 0.0), 3.0);
+    reflectedLight.directSpecular += uGlaucousness * 0.04 * _fres * vec3(0.85, 0.92, 1.0);
+}
+// --- end glaucous sheen ---
 `;
 
 // ---------------------------------------------------------------------------
@@ -810,16 +1173,21 @@ const GRASS_LIGHTING_GLSL = /* glsl */`
 //   windGlsl:       { WIND_UNIFORM_DECLS, WIND_FUNCTION_GLSL, WIND_UNIFORM_DEFAULTS }
 //                   Pass the imported windGlsl module exports. If omitted, the
 //                   material is still valid but won't animate with wind.
-//   pigment:        number [0,1] — hue on colorRamp (default: 0.30, grass green).
+//   color:          { chlorophyllVigor, senescence, anthoTint, glaucousness,
+//                     speciesHue, starWarm, starDark } — pigment-stack axes from
+//                     computeColorAxes (defaults reproduce healthy green).
 //   colorVariation: number [0,1] — per-blade RGB spread (default: 0).
+//   veining:        number [0,1] — procedural blade-texture strength (default: 0.5).
 // ---------------------------------------------------------------------------
 
 export function createBladeMaterial(THREE, opts = {}) {
   const {
     windGlsl,
-    pigment = 0.30,
+    color = {},
     colorVariation = 0,
+    veining = 0.5,
   } = opts;
+  const c = color;
 
   // vertexColors:true makes three.js emit #define USE_COLOR → declares
   // "attribute vec3 color;" and multiplies diffuseColor.rgb by vColor.
@@ -835,8 +1203,15 @@ export function createBladeMaterial(THREE, opts = {}) {
   // Store color uniforms on userData, mirroring the wind uniforms pattern.
   // viewer.js updates these every setPlant call.
   mat.userData.colorUniforms = {
-    uPigment:        { value: pigment },
-    uColorVariation: { value: colorVariation },
+    uChlorophyllVigor: { value: c.chlorophyllVigor !== undefined ? c.chlorophyllVigor : 0.6 },
+    uSenescence:       { value: c.senescence       !== undefined ? c.senescence       : 0.0 },
+    uAnthoTint:        { value: c.anthoTint        !== undefined ? c.anthoTint        : 0.0 },
+    uGlaucousness:     { value: c.glaucousness     !== undefined ? c.glaucousness     : 0.0 },
+    uSpeciesHue:       { value: c.speciesHue       !== undefined ? c.speciesHue       : 0.30 },
+    uStarWarm:         { value: c.starWarm         !== undefined ? c.starWarm         : 0.0 },
+    uStarDark:         { value: c.starDark         !== undefined ? c.starDark         : 1.0 },
+    uColorVariation:   { value: colorVariation },
+    uVeining:          { value: veining },
   };
 
   if (windGlsl) {
@@ -875,6 +1250,7 @@ export function createBladeMaterial(THREE, opts = {}) {
           COLOR_UNIFORM_DECLS,
           COLOR_FUNCTION_GLSL,
           GRASS_VARYING_DECL_VERT,
+          BLADE_TEX_VERT_DECL,
         ].join('\n')
       );
 
@@ -906,6 +1282,7 @@ export function createBladeMaterial(THREE, opts = {}) {
           'transformed += _wind;',
           'vColor.rgb = bladeColorTint(colorSeed, aSwayFactor, aColorJitter) * ao;',
           GRASS_VARYING_WRITE_VERT,
+          BLADE_TEX_VERT_WRITE,
           '// --- end blade ---',
           '#include <project_vertex>',
         ].join('\n')
@@ -917,12 +1294,24 @@ export function createBladeMaterial(THREE, opts = {}) {
       // only provide vertexShader, and by the depth material which has no frag).
       // -----------------------------------------------------------------------
       if (shader.fragmentShader !== undefined) {
-        // Inject fragment varying declaration after #include <common>.
+        // Inject fragment varying declarations + procedural-texture helpers
+        // after #include <common>.
         shader.fragmentShader = shader.fragmentShader.replace(
           '#include <common>',
           [
             '#include <common>',
             GRASS_FRAG_DECL,
+            BLADE_TEX_FRAG_DECL,
+          ].join('\n')
+        );
+
+        // Modulate the vColor-tinted albedo with the procedural blade texture
+        // immediately after #include <color_fragment> (diffuseColor is set there).
+        shader.fragmentShader = shader.fragmentShader.replace(
+          '#include <color_fragment>',
+          [
+            '#include <color_fragment>',
+            BLADE_TEX_FRAG_APPLY,
           ].join('\n')
         );
 

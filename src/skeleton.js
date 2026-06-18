@@ -160,11 +160,24 @@ export function buildSkeleton(genome, rng, jitterAmp = 1.0) {
     clumpSpread   = 0.30,  // [0,1] → basal footprint radius
     bladeSegments = 0.40,  // [0,1] → segments per blade ∈ [3,8]
     fanSpread     = 0.50,  // [0,1] → azimuthal fan angle
-    bladeLength   = 0.35,  // [0,1] → world height in [0.15, 2.2] m
+    bladeLength   = 0.35,  // [0,1] → world height in [0.15, 2.2] m (MIN of the per-blade range)
     jitter        = 0.40,  // [0,1] → positional jitter amplitude
     structuralSeed = 0,    // uint32 or [0,1] float — deterministic curvature seed
     curve         = 0.15,  // [0,1] → in-plane lateral curvature
   } = genome;
+
+  // Per-blade range maxima. Each blade samples its own value in [base, max] so a
+  // clump has varied tillers (height/width/taper/arch/droop). Fallback max=base
+  // → no variation, keeping hand-built test genomes (no …Max fields) identical.
+  const bladeLengthMax = genome.bladeLengthMax !== undefined ? genome.bladeLengthMax : bladeLength;
+  const bladeWidth     = genome.bladeWidth     !== undefined ? genome.bladeWidth     : 0.45;
+  const bladeWidthMax  = genome.bladeWidthMax  !== undefined ? genome.bladeWidthMax  : bladeWidth;
+  const bladeTaper     = genome.bladeTaper     !== undefined ? genome.bladeTaper     : 0.70;
+  const bladeTaperMax  = genome.bladeTaperMax  !== undefined ? genome.bladeTaperMax  : bladeTaper;
+  const archG          = genome.arch           !== undefined ? genome.arch           : 0.25;
+  const archMax        = genome.archMax        !== undefined ? genome.archMax        : archG;
+  const tipDroopG      = genome.tipDroop       !== undefined ? genome.tipDroop       : 0.10;
+  const tipDroopMax    = genome.tipDroopMax    !== undefined ? genome.tipDroopMax    : tipDroopG;
 
   // -------------------------------------------------------------------------
   // Derive structural counts from continuous genes.
@@ -199,10 +212,21 @@ export function buildSkeleton(genome, rng, jitterAmp = 1.0) {
   // We draw one azimuth per blade (for jitter), always consuming draws for ALL
   // blades (full + crossfade) in sequence to keep draw count deterministic.
   // -------------------------------------------------------------------------
+  // Per blade: an azimuth-jitter draw + a per-blade variate draw [0,1]. The
+  // variate seeds the per-blade range sampling (decorrelated per param below).
   const bladeAzimuths = [];
+  const bladeVariates = [];
   for (let bi = 0; bi < totalBlades; bi++) {
-    bladeAzimuths.push(rng() * Math.PI * 2); // draw 1+bi: azimuth jitter
+    bladeAzimuths.push(rng() * Math.PI * 2); // azimuth jitter
+    bladeVariates.push(rng());               // per-blade variate
   }
+
+  // fract + range sampler (lo/hi auto-ordered so a min>max gene pair is safe).
+  const fract = (x) => x - Math.floor(x);
+  const sampleRange = (base, hi, t) => {
+    const lo = Math.min(base, hi), h = Math.max(base, hi);
+    return lo + (h - lo) * t;
+  };
 
   const nodes = [];
   const bones = [];
@@ -279,8 +303,13 @@ export function buildSkeleton(genome, rng, jitterAmp = 1.0) {
     // Arc per segment: spread total arc evenly across segments.
     const arcPerSeg = segCount > 1 ? arcAngle / segCount : 0;
 
+    // --- Per-blade range sampling (decorrelated per param from one variate) ---
+    const vt = bladeVariates[bi];
+    const lenGene = sampleRange(bladeLength, bladeLengthMax, vt);
+    const bladeWorldLenFull = BLADE_LENGTH_MIN + lenGene * (BLADE_LENGTH_MAX - BLADE_LENGTH_MIN);
+
     // Blade chain length (height) for this blade (crossfade scaled).
-    const bladeWorldLen = worldLength * weight;
+    const bladeWorldLen = bladeWorldLenFull * weight;
     const segLen        = bladeWorldLen / segCount;
 
     // Track the growing chain direction and position.
@@ -290,7 +319,10 @@ export function buildSkeleton(genome, rng, jitterAmp = 1.0) {
     // Index of the base node (the node we're about to push).
     const baseNodeIdx = nodes.length;
 
-    // Emit base node (swayBase=0, parentIdx=-1).
+    // Emit base node (swayBase=0, parentIdx=-1). It carries the per-blade sampled
+    // gene values consumed downstream: proportions.js reads vArch/vTipDroop;
+    // bladeMesh.js reads vWidth/vTaper. (Decorrelated via fract so a blade isn't
+    // uniformly small in every axis.)
     nodes.push({
       pos:         [...pos],
       radius:      0.012 * weight, // placeholder; proportions refines this
@@ -300,6 +332,10 @@ export function buildSkeleton(genome, rng, jitterAmp = 1.0) {
       isStem:      true,
       isTerminal:  false,
       swayBase:    0,
+      vWidth:      sampleRange(bladeWidth, bladeWidthMax, fract(vt * 1.37 + 0.11)),
+      vTaper:      sampleRange(bladeTaper, bladeTaperMax, fract(vt * 2.13 + 0.29)),
+      vArch:       sampleRange(archG,      archMax,       fract(vt * 0.71 + 0.53)),
+      vTipDroop:   sampleRange(tipDroopG,  tipDroopMax,   fract(vt * 3.07 + 0.17)),
     });
 
     // Emit intermediate + tip nodes.

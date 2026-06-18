@@ -237,8 +237,8 @@ export function solveProportions(graph, envelope, genome = null) {
   // Derived scalars.
   const bladeWidthBase = (BLADE_WIDTH_MIN + bladeWidthGene * (BLADE_WIDTH_MAX - BLADE_WIDTH_MIN)) * windWidthMod;
   const archScale      = Math.max(0, 1 - stiffnessGene * STIFFNESS_SCALE);
-  const archTotal      = archGene * MAX_ARCH_ANGLE * archScale;
-  const tipDroopTotal  = tipDroopGene * TIP_DROOP_MAX_ANGLE * archScale;
+  // archTotal/tipDroopTotal are PER-BLADE (each chain's base node may carry a
+  // sampled vArch/vTipDroop from the per-blade range; fallback to the gene).
 
   // verticality → base tilt angle of the blade.
   // vertAngle = (0.5 - verticality) * π * 1.1
@@ -364,14 +364,28 @@ export function solveProportions(graph, envelope, genome = null) {
     // --- Pre-compute segment lengths from ORIGINAL positions ---
     // Must be done before we mutate any node in this chain.
     const segLengths = new Array(segCountBlade);
+    // origDirs: the skeleton's per-segment unit directions, which ENCODE the
+    // `curve` gene's lateral arc. Pass 2 keeps these and adds arch/vert on top
+    // (previously it discarded them, which silently killed the curve gene).
+    const origDirs   = new Array(segCountBlade);
     for (let ci = 1; ci < chain.length; ci++) {
       const prev = nodes[chain[ci - 1]];
       const cur  = nodes[chain[ci]];
       const dx = cur.pos[0] - prev.pos[0];
       const dy = cur.pos[1] - prev.pos[1];
       const dz = cur.pos[2] - prev.pos[2];
-      segLengths[ci - 1] = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      const len = Math.sqrt(dx * dx + dy * dy + dz * dz);
+      segLengths[ci - 1] = len;
+      origDirs[ci - 1]   = len > 1e-12 ? [dx / len, dy / len, dz / len] : vecNorm(bodyAxis);
     }
+
+    // Per-blade arch/tipDroop: read this chain's base-node sampled values
+    // (set by skeleton's per-blade range sampling); fall back to the gene.
+    const chainBase     = nodes[chain[0]];
+    const bArch         = chainBase.vArch     !== undefined ? chainBase.vArch     : archGene;
+    const bTipDroop     = chainBase.vTipDroop !== undefined ? chainBase.vTipDroop : tipDroopGene;
+    const archTotal     = bArch     * MAX_ARCH_ANGLE     * archScale;
+    const tipDroopTotal = bTipDroop * TIP_DROOP_MAX_ANGLE * archScale;
 
     // Per-segment arch angle (spread total arc over all segments).
     const archPerSeg = segCountBlade > 0 ? archTotal / segCountBlade : 0;
@@ -435,13 +449,13 @@ export function solveProportions(graph, envelope, genome = null) {
       tiltAxis = vecScale(tiltAxis, 1 / tiltAxisLen);
     }
 
-    // --- Initial direction: bodyAxis rotated by vertAngle about tiltAxis ---
-    let dir = vecNorm(bodyAxis);
-    if (Math.abs(vertAngle) > 1e-10) {
-      dir = rotateAroundAxis(dir, tiltAxis, vertAngle);
-    }
-
-    // --- Walk each segment ---
+    // --- Walk each segment, PRESERVING the skeleton's lateral curvature ---
+    // Each segment keeps its original skeleton direction (origDirs[i], which
+    // carries the `curve` gene's lateral arc) and is additionally rotated about
+    // the tiltAxis by the accumulated verticality + arch (+ distal tipDroop).
+    // For a straight skeleton (origDir = bodyAxis) this is identical to the prior
+    // behaviour, so the arch/verticality/tipDroop tests are unaffected.
+    let cumAngle = vertAngle;
     let pos = baseNode.pos.slice();
 
     for (let ci = 1; ci < chain.length; ci++) {
@@ -449,21 +463,15 @@ export function solveProportions(graph, envelope, genome = null) {
       const sb      = curNode.swayBase !== undefined ? curNode.swayBase : 0;
       const segLen  = segLengths[ci - 1];
 
-      // Advance position along current direction.
+      const dir = vecNorm(rotateAroundAxis(origDirs[ci - 1], tiltAxis, cumAngle));
       pos = vecAdd(pos, vecScale(dir, segLen));
       curNode.pos[0] = pos[0];
       curNode.pos[1] = pos[1];
       curNode.pos[2] = pos[2];
 
-      // Bend the direction for the NEXT segment:
-      // arch bends about the fixed tiltAxis (outward/over).
-      // tipDroop adds more bend in the distal third.
-      let totalBendAngle = archPerSeg;
-      if (sb >= (2 / 3)) totalBendAngle += tipDroopPerSeg;
-
-      if (Math.abs(totalBendAngle) > 1e-10) {
-        dir = vecNorm(rotateAroundAxis(dir, tiltAxis, totalBendAngle));
-      }
+      // Accumulate bend for subsequent segments: arch over the whole blade,
+      // tipDroop concentrated in the distal third.
+      cumAngle += archPerSeg + (sb >= (2 / 3) ? tipDroopPerSeg : 0);
     }
   }
 
