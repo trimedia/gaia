@@ -91,6 +91,35 @@ export const GRASS_SCHEMA = Object.freeze({
     range: Object.freeze([0, 1]),
   }),
 
+  // --- Inflorescence / grain head (foliage.js structured spike) ------------
+  // Together with seedHead (presence/density) these build a wheat-style ear:
+  // a rachis bearing spikelets, each with several grains, optionally awned.
+  // inflorescenceType=0 keeps the legacy radial-fan panicle (identity).
+
+  /**
+   * Inflorescence form: 0 = none / legacy fan (identity), low = open panicle
+   * (golden-angle spiral), high = tight spike/ear (distichous two-ranked).
+   */
+  inflorescenceType: Object.freeze({
+    tier: 'structural',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /** Spikelets per ear → ~[8,28]; controls head length/density. */
+  spikeletCount: Object.freeze({
+    tier: 'structural',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /** Grains (fertile florets) per spikelet → ~[1,5]. */
+  grainsPerSpikelet: Object.freeze({
+    tier: 'structural',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
   // -------------------------------------------------------------------------
   // PROPORTIONS TIER — shape
   // -------------------------------------------------------------------------
@@ -175,6 +204,116 @@ export const GRASS_SCHEMA = Object.freeze({
     range: Object.freeze([0, 1]),
   }),
 
+  // --- Per-blade range maxima (two-point sliders) --------------------------
+  // The base gene above is the MIN of the range; the …Max gene is the MAX. Each
+  // blade in a clump samples its own value in [min, max] (skeleton.js), so a
+  // clump has varied heights/widths/droop instead of identical tillers. When a
+  // …Max equals its base gene there is NO variation (identity).
+  bladeLengthMax: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+  bladeWidthMax: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+  bladeTaperMax: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+  archMax: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+  tipDroopMax: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  // --- Blade silhouette profile (bladeMesh.js widthAt) ---------------------
+  // These three deform the along-blade WIDTH profile away from the default
+  // linear base→tip taper, spanning linear / strap / lanceolate / elliptic /
+  // acuminate / needle silhouettes. Identity (bladeShape=0, tipSharpness=0.25)
+  // reproduces the prior linear-taper ribbon byte-for-byte.
+
+  /**
+   * Belly amount: blend from the straight linear taper (0, identity) toward a
+   * bellied profile whose width peaks at `widestPos` (1 = full lanceolate belly).
+   */
+  bladeShape: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Along-blade position of maximum width (only active when bladeShape > 0).
+   * 0 = widest at base, 0.5 = widest at mid (lanceolate), 1 = widest near tip.
+   */
+  widestPos: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Cross-section curl (bladeMesh.js): cups the blade across its width into a
+   * channel/gutter, with per-vertex normals recomputed from the curve so the
+   * fold catches light. 0 = flat ribbon (identity). Combines with midribStrength
+   * (central crease) → flat / channeled / V-folded / deep-gutter cross-sections.
+   */
+  crossSectionCurl: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Blade twist (bladeMesh.js): spirals the ribbon along its length.
+   * 0 = untwisted (identity); 1 ≈ 1.25 turns base→tip (corkscrew ornamentals).
+   */
+  bladeTwist: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Stem roundness (bladeMesh.js): closes the cross-section from a flat blade
+   * (0 = identity, ribbon) into a solid ROUND TUBE / culm (1 = circular cane).
+   * This is the leaf↔stalk axis — reeds, rushes, bamboo, horsetails are round
+   * stalks, not flat blades. Intermediate values give a thick flattened stem.
+   */
+  stemRoundness: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Awn (bristle) length on the ear, as a fraction of ear length. 0 = awnless
+   * (identity). Only meaningful when an inflorescence is present.
+   */
+  awnLength: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Mid-ear bulge: spindle factor making mid-ear spikelets largest. 0.5 ≈ uniform.
+   */
+  midEarBulge: Object.freeze({
+    tier: 'proportions',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
   // -------------------------------------------------------------------------
   // COSMETIC TIER — surface detail
   // -------------------------------------------------------------------------
@@ -223,6 +362,64 @@ export const GRASS_SCHEMA = Object.freeze({
    * Drives the center vertex offset in the blade ribbon mesher.
    */
   midribStrength: Object.freeze({
+    tier: 'cosmetic',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Math-derived blade surface texture strength (bladeMesh.js fragment shader):
+   * longitudinal veins/striations + midrib band + fibre mottle + tip/edge
+   * dryness. 0 = smooth flat colour (identity); 1 = strong striation + drying.
+   */
+  veining: Object.freeze({
+    tier: 'cosmetic',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  // --- Condition-driven color: per-species baselines for the pigment stack ---
+  // The FINAL colour axes are computed in genome.js computeColorAxes() by
+  // combining these seed baselines with environment (fertility/aridity/temp/
+  // light/sun/starTemp). `pigment` (above) is reinterpreted as the species hue.
+
+  /**
+   * Chlorophyll vigour baseline — species' inherent green darkness/saturation.
+   * 0 = pale/yellow-green, 1 = deep saturated green. Env (fertility, water,
+   * light) shifts the final value around this baseline.
+   */
+  chlorophyll: Object.freeze({
+    tier: 'cosmetic',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Senescence baseline — green→gold→straw dryness/ripeness. 0 = lush (identity),
+   * 1 = fully straw. Env (aridity, heat) + maturity add on top. High for cereals.
+   */
+  senescence: Object.freeze({
+    tier: 'cosmetic',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Anthocyanin propensity — how readily the species reddens/purples under the
+   * cold×light stress gate. 0 = stays green (identity), 1 = reddens strongly.
+   */
+  anthoPropensity: Object.freeze({
+    tier: 'cosmetic',
+    kind: 'continuous',
+    range: Object.freeze([0, 1]),
+  }),
+
+  /**
+   * Glaucousness baseline — waxy blue-grey surface bloom (desaturate + blue tilt
+   * + faint sheen). 0 = no wax (identity), 1 = strong blue-grey. Env (aridity,
+   * sun) adds on top. High for blue fescue / blue oat grass.
+   */
+  glaucousness: Object.freeze({
     tier: 'cosmetic',
     kind: 'continuous',
     range: Object.freeze([0, 1]),

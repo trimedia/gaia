@@ -33,7 +33,30 @@
 //     Draw 16: colorVariation
 //     Draw 17: jitter
 //     Draw 18: midribStrength
-//     Draw 19: structuralSeed  — (rng()*2**32)>>>0  (FINAL draw)
+//     Draw 19: structuralSeed  — (rng()*2**32)>>>0  (seeds skeleton + foliage)
+//   Blade-silhouette genes (appended AFTER structuralSeed so its value — and
+//   therefore all downstream structure — is byte-identical for existing seeds):
+//     Draw 20: bladeShape
+//     Draw 21: widestPos
+//     Draw 22: crossSectionCurl
+//     Draw 23: veining
+//   Inflorescence genes (draws 24–28):
+//     Draw 24: inflorescenceType
+//     Draw 25: spikeletCount
+//     Draw 26: grainsPerSpikelet
+//     Draw 27: awnLength
+//     Draw 28: midEarBulge
+//     Draw 29: bladeTwist
+//     Draw 30: stemRoundness
+//   Color-stack species baselines (draws 31–34):
+//     Draw 31: chlorophyll
+//     Draw 32: senescence
+//     Draw 33: anthoPropensity
+//     Draw 34: glaucousness
+//   Per-blade range maxima (draws 35–39; base gene = min):
+//     Draw 35: bladeLengthMax   Draw 38: archMax
+//     Draw 36: bladeWidthMax    Draw 39: tipDroopMax
+//     Draw 37: bladeTaperMax
 //
 // NEUTRAL DEFAULTS — the sensible "mid lawn blade" plant:
 //   tillerCount:     0.45  (≈6 blades: 1 + 0.45*11 ≈ 5.9)
@@ -109,6 +132,9 @@ const NEUTRAL = Object.freeze({
   bladeSegments:   0.40,
   seedHead:        0.00,
   fanSpread:       0.50,
+  inflorescenceType: 0.00,  // no structured ear by default (legacy fan path)
+  spikeletCount:     0.50,  // inert until inflorescenceType > 0
+  grainsPerSpikelet: 0.50,  // inert until inflorescenceType > 0
   // Proportions
   bladeLength:     0.35,
   tipDroop:        0.10,
@@ -118,12 +144,32 @@ const NEUTRAL = Object.freeze({
   curve:           0.15,
   stiffness:       0.60,
   verticality:     0.55,
+  // Per-blade range maxima (base gene = min): blades vary within [min,max].
+  bladeLengthMax:  0.55,  // height varies (min 0.35 → max 0.55)
+  bladeWidthMax:   0.55,
+  bladeTaperMax:   0.80,
+  archMax:         0.40,
+  tipDroopMax:     0.30,
+  awnLength:       0.00,  // awnless by default
+  midEarBulge:     0.50,  // uniform ear by default
+  // Blade silhouette profile (consumed by bladeMesh.js; identity = linear taper)
+  bladeShape:      0.15,  // mild lanceolate belly on average (0 = straight taper)
+  widestPos:       0.45,  // widest just below mid-blade
+  crossSectionCurl: 0.20, // gentle channel on average (0 = flat ribbon)
+  bladeTwist:      0.00,  // untwisted by default
+  stemRoundness:   0.00,  // flat blade by default (1 = round stalk/culm)
   // Cosmetic (pigment handled separately via seed draw)
   pigment:         0.30,
   bladeRaggedness: 0.10,
   colorVariation:  0.20,
   jitter:          0.40,
   midribStrength:  0.20,
+  veining:         0.50,  // math-derived blade texture on by default (0 = smooth)
+  // Condition-driven color: per-species baselines (env shifts the final axes).
+  chlorophyll:     0.60,  // healthy green baseline
+  senescence:      0.00,  // lush (not dried) baseline
+  anthoPropensity: 0.00,  // does not redden by default
+  glaucousness:    0.00,  // no waxy bloom by default
 });
 
 // ---------------------------------------------------------------------------
@@ -158,6 +204,11 @@ function computeEnvOffset(env) {
     bladeSegments:   0,
     seedHead:        0,
     fanSpread:       0,
+    inflorescenceType: 0,
+    spikeletCount:     0,
+    grainsPerSpikelet: 0,
+    awnLength:         0,
+    midEarBulge:       0,
     bladeLength:     0,
     tipDroop:        0,
     bladeWidth:      0,
@@ -166,11 +217,26 @@ function computeEnvOffset(env) {
     curve:           0,
     stiffness:       0,
     verticality:     0,
+    bladeLengthMax:  0,
+    bladeWidthMax:   0,
+    bladeTaperMax:   0,
+    archMax:         0,
+    tipDroopMax:     0,
+    bladeShape:      0,
+    widestPos:       0,
+    crossSectionCurl: 0,
+    bladeTwist:      0,
+    stemRoundness:   0,
+    chlorophyll:     0,
+    senescence:      0,
+    anthoPropensity: 0,
+    glaucousness:    0,
     pigment:         0,
     bladeRaggedness: 0,
     colorVariation:  0,
     jitter:          0,
     midribStrength:  0,
+    veining:         0,
   };
 
   // --- wind → prostrate + stiff ---
@@ -260,8 +326,42 @@ export function randomGenome(env, seed) {
   const jitter          = gene('jitter',          0.20);                          // draw 17
   const midribStrength  = gene('midribStrength',  STD);                           // draw 18
 
-  // structuralSeed: always a fresh uint32 from the rng (draw 19 — FINAL draw)
+  // structuralSeed: a fresh uint32 from the rng. Kept at draw 19 (its original
+  // slot) so that ALL downstream structure (skeleton + foliage, both seeded from
+  // structuralSeed) stays byte-identical for every existing seed. New genes are
+  // appended AFTER this draw (per the "append draws LAST" determinism norm).
   const structuralSeed = (rng() * 2 ** 32) >>> 0;                                // draw 19
+
+  // --- Blade silhouette + cross-section genes (draws 20–22, appended after structuralSeed) ---
+  const bladeShape       = gene('bladeShape',       STD);                        // draw 20
+  const widestPos        = gene('widestPos',        STD);                        // draw 21
+  const crossSectionCurl = gene('crossSectionCurl', STD);                        // draw 22
+  const veining          = gene('veining',          STD);                        // draw 23
+
+  // --- Inflorescence genes (draws 24–28) ---
+  const inflorescenceType = gene('inflorescenceType', STD);                      // draw 24
+  const spikeletCount     = gene('spikeletCount',     STD);                      // draw 25
+  const grainsPerSpikelet = gene('grainsPerSpikelet', STD);                      // draw 26
+  const awnLength         = gene('awnLength',         STD);                      // draw 27
+  const midEarBulge       = gene('midEarBulge',       STD);                      // draw 28
+
+  // --- Blade twist + stem roundness (draws 29–30) ---
+  const bladeTwist        = gene('bladeTwist',        STD);                      // draw 29
+  const stemRoundness     = gene('stemRoundness',     STD);                      // draw 30
+
+  // --- Color-stack species baselines (draws 31–34) ---
+  const chlorophyll       = gene('chlorophyll',       STD);                      // draw 31
+  const senescence        = gene('senescence',        STD);                      // draw 32
+  const anthoPropensity   = gene('anthoPropensity',   STD);                      // draw 33
+  const glaucousness      = gene('glaucousness',      STD);                      // draw 34
+
+  // --- Per-blade range maxima (draws 35–39). Drawn as the base gene + a
+  //     positive spread so max ≥ min and clumps get natural per-blade variety. ---
+  const bladeLengthMax = clampField(GRASS_SCHEMA, 'bladeLengthMax', bladeLength + 0.10 + rng() * 0.25); // draw 35
+  const bladeWidthMax  = clampField(GRASS_SCHEMA, 'bladeWidthMax',  bladeWidth  + 0.05 + rng() * 0.15); // draw 36
+  const bladeTaperMax  = clampField(GRASS_SCHEMA, 'bladeTaperMax',  bladeTaper  + rng() * 0.10);        // draw 37
+  const archMax        = clampField(GRASS_SCHEMA, 'archMax',        arch        + 0.05 + rng() * 0.25); // draw 38
+  const tipDroopMax    = clampField(GRASS_SCHEMA, 'tipDroopMax',    tipDroop    + 0.05 + rng() * 0.25); // draw 39
 
   return {
     // Structural
@@ -270,23 +370,112 @@ export function randomGenome(env, seed) {
     bladeSegments,
     seedHead,
     fanSpread,
+    inflorescenceType,
+    spikeletCount,
+    grainsPerSpikelet,
     // Proportions
     bladeLength,
     tipDroop,
+    awnLength,
+    midEarBulge,
     bladeWidth,
     bladeTaper,
     arch,
     curve,
     stiffness,
     verticality,
+    bladeLengthMax,
+    bladeWidthMax,
+    bladeTaperMax,
+    archMax,
+    tipDroopMax,
+    bladeShape,
+    widestPos,
+    crossSectionCurl,
+    bladeTwist,
+    stemRoundness,
     // Cosmetic
     pigment,
     bladeRaggedness,
     colorVariation,
     jitter,
     midribStrength,
+    veining,
+    chlorophyll,
+    senescence,
+    anthoPropensity,
+    glaucousness,
     structuralSeed,
   };
+}
+
+// ---------------------------------------------------------------------------
+// computeColorAxes(genome, env) -> final pigment-stack color axes  [PURE]
+//
+// Condition-driven color: combines per-species seed BASELINES (chlorophyll,
+// senescence, anthoPropensity, glaucousness, pigment=hue) with the ENVIRONMENT
+// (fertility, aridity, temperature, light, sunAngle, starTemp) — the real-world
+// drivers of grass color. Returns axis values in [0,1] consumed by the blade
+// shader's pigment stack (and the JS swatch via colorRamp.colorStackRGB).
+//
+// Recomputed every resolve() so CLIMATE sliders shift color live (the env biases
+// are NOT baked into the genome). Identity-ish defaults (neutral env, neutral
+// genome) → today's healthy green. Star stage is a no-op at the Sun-like default.
+// ---------------------------------------------------------------------------
+
+/** Default Sun-like star temperature proxy (0=cool red dwarf … 1=hot blue-white). */
+export const STAR_TEMP_SUN = 0.55;
+
+export function computeColorAxes(genome, env) {
+  const e = env || {};
+  const fertility   = e.fertility   !== undefined ? e.fertility   : 0.5;
+  const aridity     = e.aridity     !== undefined ? e.aridity     : 0.35;
+  const temperature = e.temperature !== undefined ? e.temperature : 0.5;
+  const light       = e.light       !== undefined ? e.light       : 0.6;
+  const sunAngle    = e.sunAngle    !== undefined ? e.sunAngle    : 0.25;
+  const starTemp    = e.starTemp    !== undefined ? e.starTemp    : STAR_TEMP_SUN;
+
+  // Neutral-relative env terms (mirror computeEnvOffset conventions).
+  const fertFrac = (fertility - 0.5) / 0.5;                 // -1..+1
+  const aridUp   = clamp((aridity - 0.35) / 0.65, 0, 1);    // 0..1 (drought)
+  const tempC    = -5 + temperature * 45;                   // env temp → °C (−5..40)
+  const heatUp   = clamp((tempC - 22) / 18, 0, 1);          // 0..1 above ~22 °C
+  const coldGate = clamp((20 - tempC) / 15, 0, 1);          // 1 at ≤5 °C, 0 at ≥20 °C
+  const lightGate = clamp((light - 0.3) / 0.7, 0, 1);       // high light promotes antho/wax
+  const dim       = clamp((0.6 - light) / 0.6, 0, 1);       // shade amount
+
+  // Seed baselines.
+  const chlorophyll   = genome.chlorophyll     !== undefined ? genome.chlorophyll     : 0.6;
+  const senescenceG   = genome.senescence      !== undefined ? genome.senescence      : 0.0;
+  const anthoProp     = genome.anthoPropensity !== undefined ? genome.anthoPropensity : 0.0;
+  const glaucousG     = genome.glaucousness    !== undefined ? genome.glaucousness    : 0.0;
+  const seedHead      = genome.seedHead        !== undefined ? genome.seedHead        : 0.0;
+
+  // --- Axis combination (env + baseline), all clamped to [0,1] ---
+  // Chlorophyll vigour: fertility ↑ green; drought ↓; mild shade ↑ (light-hoarding).
+  const chlorophyllVigor = clamp(chlorophyll + 0.45 * fertFrac - 0.30 * aridUp + 0.10 * dim, 0, 1);
+  // Senescence: drought + heat + a little maturity push green→gold→straw.
+  const senescence = clamp(senescenceG + 0.45 * aridUp + 0.30 * heatUp + 0.12 * seedHead, 0, 1);
+  // Anthocyanin: multiplicative cold×light gate, amplified by drought/low fertility,
+  // scaled by species propensity (with a small floor so cold+bright still tints).
+  const stressMult = 1 + 0.5 * aridUp + 0.5 * clamp(-fertFrac, 0, 1);
+  const anthoTint  = clamp((0.30 + 0.70 * anthoProp) * coldGate * lightGate * stressMult, 0, 1);
+  // Glaucous wax: a dry/high-sun ADAPTATION — only EXCESS aridity/light/sun/heat
+  // above neutral adds wax, so well-watered shaded grass stays unwaxed.
+  const lightUp = clamp((light - 0.6) / 0.4, 0, 1);
+  const sunUp   = clamp((sunAngle - 0.5) / 0.5, 0, 1);
+  const glaucousness = clamp(glaucousG + 0.50 * aridUp + 0.20 * lightUp + 0.15 * sunUp + 0.10 * heatUp, 0, 1);
+  // Species hue (constrained green band; reinterprets the old `pigment` gene).
+  const speciesHue = genome.pigment !== undefined ? genome.pigment : 0.30;
+
+  // --- Star spectrum (OPTIONAL, speculative; no-op at the Sun-like default) ---
+  // starWarm: signed star warmth (hot/F = +  → shader pushes yellow; cool/M = −
+  //           → shader pushes red). 0 at the Sun-like default.
+  // starDark: lightness multiplier — cool/dim stars darken the canopy (light-hoarding).
+  const starWarm = starTemp - STAR_TEMP_SUN;                       // −0.55..+0.45, 0 = Sun
+  const starDark = starWarm < 0 ? clamp(1 + starWarm * 0.9, 0.2, 1) : 1;
+
+  return { chlorophyllVigor, senescence, anthoTint, glaucousness, speciesHue, starWarm, starDark };
 }
 
 // ---------------------------------------------------------------------------
@@ -334,15 +523,25 @@ export function resolve(genome, env) {
   // Foliage: seed-head instance set (may be count:0 when seedHead===0).
   const foliage = generateFoliage(graph, genome);
 
+  // Condition-driven color axes (genome baselines + live environment).
+  const color = computeColorAxes(genome, env);
+
   return {
     graph,
     genome,
     boneCount:       graph.bones.length,
     lightDir:        graph.meta.lightDir,
+    color,
     pigment:         genome.pigment,
     colorVariation:  genome.colorVariation,
+    veining:         genome.veining,
     bladeWidth:      genome.bladeWidth,
     bladeTaper:      genome.bladeTaper,
+    bladeShape:      genome.bladeShape,
+    widestPos:       genome.widestPos,
+    crossSectionCurl: genome.crossSectionCurl,
+    bladeTwist:      genome.bladeTwist,
+    stemRoundness:   genome.stemRoundness,
     midribStrength:  genome.midribStrength,
     bladeRaggedness: genome.bladeRaggedness,
     stiffness:       genome.stiffness,

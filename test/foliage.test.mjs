@@ -517,6 +517,72 @@ test('graph without swayBase field → no crash (Y-height fallback path)', () =>
 // INTEGRATION SMOKE TEST — passes a graph through the full determinism chain.
 // ===========================================================================
 
+// ===========================================================================
+// STRUCTURED INFLORESCENCE (Phase 4) — inflorescenceType > 0 builds a wheat-style
+// ear (many grains per tip), distinct from the legacy fan path.
+// ===========================================================================
+
+function makeEarGenome(overrides = {}) {
+  return {
+    seedHead:          1.0,
+    inflorescenceType: 0.8,   // tight spike
+    spikeletCount:     0.6,
+    grainsPerSpikelet: 0.6,
+    awnLength:         0.0,
+    midEarBulge:       0.6,
+    structuralSeed:    0xBEEF1234,
+    ...overrides,
+  };
+}
+
+test('inflorescenceType>0 → many grains per tip (structured ear, exceeds legacy per-tip cap)', () => {
+  const graph = makeTipGraph(1);
+  const ear   = generateFoliage(graph, makeEarGenome());
+  // A single ear has many spikelets×grains — well above the legacy SEED_HEAD_MAX_PER_TIP (8).
+  assert.ok(ear.count > SEED_HEAD_MAX_PER_TIP,
+    `structured ear should emit > ${SEED_HEAD_MAX_PER_TIP} instances per tip, got ${ear.count}`);
+});
+
+test('inflorescenceType=0 (legacy fan) caps at SEED_HEAD_MAX_PER_TIP per tip', () => {
+  const graph = makeTipGraph(1);
+  const fan   = generateFoliage(graph, makeEarGenome({ inflorescenceType: 0 }));
+  assert.ok(fan.count <= SEED_HEAD_MAX_PER_TIP,
+    `legacy fan should cap at ${SEED_HEAD_MAX_PER_TIP}, got ${fan.count}`);
+});
+
+test('structured ear: deterministic, in-budget, valid ranges, aspect present', () => {
+  const graph = makeTipGraph(2);
+  const g     = makeEarGenome({ awnLength: 0.8 });
+  const r1 = generateFoliage(graph, g);
+  const r2 = generateFoliage(graph, g);
+  assert.strictEqual(r1.count, r2.count, 'count deterministic');
+  assert.ok(r1.count > 0 && r1.count <= MAX_SEED_HEADS, 'count in budget');
+  assert.ok(r1.aspect instanceof Float32Array, 'aspect SoA present');
+  for (let i = 0; i < r1.count; i++) {
+    assert.ok(r1.scale[i] > 0, `scale[${i}] positive`);
+    assert.ok(r1.aspect[i] >= 1, `aspect[${i}] >= 1`);
+    assert.ok(r1.ageColor[i] >= 0 && r1.ageColor[i] <= 1, `ageColor[${i}] in [0,1]`);
+    assert.ok(Number.isFinite(r1.position[i*3]) && Number.isFinite(r1.position[i*3+1]) && Number.isFinite(r1.position[i*3+2]),
+      `position[${i}] finite`);
+  }
+  // Byte-identical buffers across the two calls.
+  for (let i = 0; i < r1.count; i++) {
+    assert.strictEqual(r1.position[i*3], r2.position[i*3], `position[${i}] deterministic`);
+    assert.strictEqual(r1.aspect[i], r2.aspect[i], `aspect[${i}] deterministic`);
+  }
+});
+
+test('awnLength>0 adds long thin instances (aspect >> 1)', () => {
+  const graph    = makeTipGraph(1);
+  const awnless  = generateFoliage(graph, makeEarGenome({ awnLength: 0 }));
+  const awned    = generateFoliage(graph, makeEarGenome({ awnLength: 0.9 }));
+  assert.ok(awned.count > awnless.count, 'awns should add instances');
+  // Some instance must be a long thin bristle.
+  let maxAspect = 0;
+  for (let i = 0; i < awned.count; i++) maxAspect = Math.max(maxAspect, awned.aspect[i]);
+  assert.ok(maxAspect > 3, `awns should have aspect >> 1, got max ${maxAspect.toFixed(1)}`);
+});
+
 test('full smoke: 8-tip graph, seedHead=1.0, two passes byte-identical', () => {
   const graph  = makeTipGraph(8, 0.8);
   const genome = makeGenome({ seedHead: 1.0, structuralSeed: 0xDEADBEEF });

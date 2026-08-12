@@ -245,42 +245,35 @@ test('swayFactor is monotonically non-decreasing along a single blade', () => {
 // AC: opts change geometry.
 // ---------------------------------------------------------------------------
 
-test('bladeTaper=0 → left/right edges parallel; bladeTaper=1 → tip collapses', () => {
-  const graph = makeBladeGraph(4);
+test('parallel body + tip taper: lower blade stays full width; only the upper portion narrows', () => {
+  // N=6 → rings at t = 0, 0.2, 0.4, 0.6, 0.8 (TIP_START=0.6, so only t>0.6 tapers).
+  const graph = makeBladeGraph(6);
 
-  const flatResult   = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0,   midribStrength: 0 });
-  const taperedResult = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0.9, midribStrength: 0 });
+  const flat    = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0,   midribStrength: 0 });
+  const tapered = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0.9, midribStrength: 0 });
 
-  // With bladeTaper=0 the base and last ring should have the same width.
-  // With bladeTaper=0.9 the last ring should be narrower.
-  // We measure the L-R distance at each ring.
   function ringWidth(res, ringIdx) {
     const base = ringIdx * 2;  // 2 verts per ring without midrib
-    const lx = res.positions[base*3];
-    const ly = res.positions[base*3+1];
-    const lz = res.positions[base*3+2];
-    const rx = res.positions[(base+1)*3];
-    const ry = res.positions[(base+1)*3+1];
-    const rz = res.positions[(base+1)*3+2];
+    const lx = res.positions[base*3],     ly = res.positions[base*3+1],     lz = res.positions[base*3+2];
+    const rx = res.positions[(base+1)*3], ry = res.positions[(base+1)*3+1], rz = res.positions[(base+1)*3+2];
     return Math.sqrt((rx-lx)**2 + (ry-ly)**2 + (rz-lz)**2);
   }
 
-  const baseWidthFlat   = ringWidth(flatResult, 0);
-  const midWidthFlat    = ringWidth(flatResult, 1);
-  const baseWidthTapered = ringWidth(taperedResult, 0);
-  const midWidthTapered  = ringWidth(taperedResult, 1);
+  // bladeTaper=0 → fully parallel: every ring equals the base.
+  for (let r = 1; r <= 4; r++) {
+    assert.ok(Math.abs(ringWidth(flat, r) - ringWidth(flat, 0)) / ringWidth(flat, 0) < 0.01,
+      `taper=0: ring ${r} should equal base (parallel)`);
+  }
 
-  // With taper=0: base and mid should be roughly equal.
-  assert.ok(
-    Math.abs(midWidthFlat - baseWidthFlat) / baseWidthFlat < 0.01,
-    `taper=0: width should be parallel; base=${baseWidthFlat.toFixed(4)}, mid=${midWidthFlat.toFixed(4)}`
-  );
-
-  // With taper=0.9: mid should be narrower than base.
-  assert.ok(
-    midWidthTapered < baseWidthTapered,
-    `taper=0.9: mid width (${midWidthTapered.toFixed(4)}) should be < base (${baseWidthTapered.toFixed(4)})`
-  );
+  // bladeTaper=0.9 → lower rings (t<=0.6) still ~full width (parallel body)...
+  const base = ringWidth(tapered, 0);
+  for (let r = 1; r <= 3; r++) { // rings at t=0.2,0.4,0.6
+    assert.ok(Math.abs(ringWidth(tapered, r) - base) / base < 0.02,
+      `taper=0.9: lower ring ${r} (t<=0.6) should stay ~full width, not taper from the base`);
+  }
+  // ...and the upper ring (t=0.8) is clearly narrower (the tip taper).
+  assert.ok(ringWidth(tapered, 4) < base * 0.9,
+    `taper=0.9: upper ring (t=0.8) width ${ringWidth(tapered,4).toFixed(4)} should be < 0.9·base ${base.toFixed(4)}`);
 });
 
 test('midribStrength=0 vs midribStrength=0.5 gives different vertex counts', () => {
@@ -643,13 +636,20 @@ test('createBladeMaterial: userData.colorUniforms are present with correct struc
     Vector2: MockVector2,
   };
 
-  const mat = createBladeMaterial(MockTHREE, { pigment: 0.35, colorVariation: 0.2 });
+  const mat = createBladeMaterial(MockTHREE, {
+    color: { chlorophyllVigor: 0.8, senescence: 0.3, glaucousness: 0.5, speciesHue: 0.4 },
+    colorVariation: 0.2,
+  });
 
   assert.ok(mat.userData.colorUniforms !== undefined, 'userData.colorUniforms should be set');
-  assert.ok('uPigment' in mat.userData.colorUniforms, 'colorUniforms should have uPigment');
-  assert.ok('uColorVariation' in mat.userData.colorUniforms, 'colorUniforms should have uColorVariation');
-  assert.strictEqual(mat.userData.colorUniforms.uPigment.value, 0.35, 'uPigment.value should match pigment opt');
-  assert.strictEqual(mat.userData.colorUniforms.uColorVariation.value, 0.2, 'uColorVariation.value should match colorVariation opt');
+  const cu = mat.userData.colorUniforms;
+  for (const k of ['uChlorophyllVigor', 'uSenescence', 'uAnthoTint', 'uGlaucousness', 'uSpeciesHue', 'uStarWarm', 'uStarDark', 'uColorVariation']) {
+    assert.ok(k in cu, `colorUniforms should have ${k}`);
+  }
+  assert.strictEqual(cu.uChlorophyllVigor.value, 0.8, 'uChlorophyllVigor matches color opt');
+  assert.strictEqual(cu.uSenescence.value, 0.3, 'uSenescence matches color opt');
+  assert.strictEqual(cu.uGlaucousness.value, 0.5, 'uGlaucousness matches color opt');
+  assert.strictEqual(cu.uColorVariation.value, 0.2, 'uColorVariation matches opt');
 });
 
 test('createBladeMaterial: default colorUniforms match defaults (pigment=0.30, colorVariation=0)', () => {
@@ -664,7 +664,9 @@ test('createBladeMaterial: default colorUniforms match defaults (pigment=0.30, c
 
   const mat = createBladeMaterial(MockTHREE, {});
   assert.ok(mat.userData.colorUniforms !== undefined, 'colorUniforms always present');
-  assert.strictEqual(mat.userData.colorUniforms.uPigment.value, 0.30, 'default pigment = 0.30');
+  assert.strictEqual(mat.userData.colorUniforms.uChlorophyllVigor.value, 0.6, 'default chlorophyllVigor = 0.6 (healthy green)');
+  assert.strictEqual(mat.userData.colorUniforms.uSenescence.value, 0, 'default senescence = 0');
+  assert.strictEqual(mat.userData.colorUniforms.uStarDark.value, 1, 'default starDark = 1 (Sun)');
   assert.strictEqual(mat.userData.colorUniforms.uColorVariation.value, 0, 'default colorVariation = 0');
 });
 
@@ -708,10 +710,10 @@ test('createBladeMaterial: compiled shader contains colorSeed attribute and vCol
     'compiled vertex shader should write to vColor'
   );
 
-  // uPigment and uColorVariation uniforms must be declared.
+  // pigment-stack + colorVariation uniforms must be declared.
   assert.ok(
-    mockShader.vertexShader.includes('uPigment'),
-    'compiled vertex shader should declare uPigment uniform'
+    mockShader.vertexShader.includes('uChlorophyllVigor'),
+    'compiled vertex shader should declare uChlorophyllVigor uniform'
   );
   assert.ok(
     mockShader.vertexShader.includes('uColorVariation'),
@@ -719,7 +721,7 @@ test('createBladeMaterial: compiled shader contains colorSeed attribute and vCol
   );
 
   // The colorUniforms should be injected into the shader.
-  assert.ok('uPigment' in mockShader.uniforms, 'uPigment uniform should be injected into shader');
+  assert.ok('uChlorophyllVigor' in mockShader.uniforms, 'uChlorophyllVigor uniform should be injected into shader');
   assert.ok('uColorVariation' in mockShader.uniforms, 'uColorVariation uniform should be injected into shader');
 });
 
@@ -1232,7 +1234,7 @@ test('createBladeMaterial: compiled shader passes aColorJitter to bladeColorTint
 // AC: tip-gradient — bladeColorTint uses swayFrac to drive tip lightness/hue.
 // ---------------------------------------------------------------------------
 
-test('createBladeMaterial: compiled shader contains tip gradient tokens (linear baseCol/tipCol mix)', () => {
+test('createBladeMaterial: compiled shader contains the pigment-stack anchors + tip gradient', () => {
   const windGlsl = { WIND_UNIFORM_DECLS, WIND_FUNCTION_GLSL, WIND_UNIFORM_DEFAULTS };
 
   class MockMaterial {
@@ -1255,14 +1257,17 @@ test('createBladeMaterial: compiled shader contains tip gradient tokens (linear 
 
   mat.onBeforeCompile(mockShader);
 
-  // The linear albedo base→tip gradient tokens must be present.
-  // New implementation uses vec3 baseCol/tipCol with a mix() call.
+  // The pigment-stack anchors must be present (green vigour mix + senescence stops).
   assert.ok(
-    mockShader.vertexShader.includes('baseCol') && mockShader.vertexShader.includes('tipCol'),
-    'compiled vertex shader must contain linear base/tip colour vectors (baseCol, tipCol)'
+    mockShader.vertexShader.includes('PALE') && mockShader.vertexShader.includes('DEEP'),
+    'compiled vertex shader must contain the pale/deep green vigour anchors'
+  );
+  assert.ok(
+    mockShader.vertexShader.includes('uChlorophyllVigor') && mockShader.vertexShader.includes('uSenescence'),
+    'compiled vertex shader must use the chlorophyll-vigour + senescence axes'
   );
 
-  // swayFrac parameter must be used in the function signature.
+  // swayFrac parameter must still drive the base→tip gradient.
   assert.ok(
     mockShader.vertexShader.includes('swayFrac'),
     'bladeColorTint function must accept swayFrac for tip-to-base gradient'
@@ -1292,16 +1297,16 @@ test('createBladeMaterial: compiled shader contains colorVariation usage in blad
 
   mat.onBeforeCompile(mockShader);
 
-  // bladeHueDelta or bladeLumDelta driven by colorSeed+uColorVariation must be present.
+  // Per-blade variation: colorSeed × uColorVariation must drive a multiplier.
   assert.ok(
-    mockShader.vertexShader.includes('bladeHueDelta') || mockShader.vertexShader.includes('bladeLumDelta'),
-    'compiled shader must contain per-blade variation tokens (bladeHueDelta/bladeLumDelta) driven by colorSeed'
+    mockShader.vertexShader.includes('uColorVariation') && mockShader.vertexShader.includes('seed'),
+    'compiled shader must apply per-blade variation (seed × uColorVariation)'
   );
 
-  // clumpJitter/clumpHueDelta must be present for per-clump variation.
+  // Per-clump variation: aColorJitter / clumpJitter must be applied.
   assert.ok(
-    mockShader.vertexShader.includes('clumpHueDelta') || mockShader.vertexShader.includes('jitterClamped'),
-    'compiled shader must contain per-clump variation tokens (clumpHueDelta/jitterClamped) driven by aColorJitter'
+    mockShader.vertexShader.includes('clumpJitter') || mockShader.vertexShader.includes('aColorJitter'),
+    'compiled shader must apply per-clump variation (aColorJitter)'
   );
 });
 
@@ -1481,4 +1486,272 @@ test('NORMAL_UP_BIAS is 0 — geometry-level bias removed, fragment shader owns 
     `NORMAL_UP_BIAS=0 check: apex ny=${ny.toFixed(4)} should be < 0.3 for near-horizontal blade ` +
     `(if >= 0.3, the geometry is still applying an up-bias that belongs in the fragment shader)`
   );
+});
+
+// ---------------------------------------------------------------------------
+// Blade silhouette profile: bladeShape / widestPos (+ bladeTaper tip sharpness).
+//
+// Identity (bladeShape=0) reproduces the taper-only ribbon. bladeShape/widestPos
+// deform the width profile; bladeTaper controls tip narrowing + sharpness.
+// ---------------------------------------------------------------------------
+
+/** Measure a non-tip ring's full L→R width (no-midrib topology: 2 verts/ring). */
+function ringWidthNoMidrib(res, ringIdx) {
+  const b = ringIdx * 2;
+  const dx = res.positions[(b + 1) * 3]     - res.positions[b * 3];
+  const dy = res.positions[(b + 1) * 3 + 1] - res.positions[b * 3 + 1];
+  const dz = res.positions[(b + 1) * 3 + 2] - res.positions[b * 3 + 2];
+  return Math.sqrt(dx * dx + dy * dy + dz * dz);
+}
+
+test('silhouette identity: bladeShape=0 == omitting the shape opts (byte-identical)', () => {
+  const graph = makeBladeGraph(6, 1.0);
+  const base = { bladeWidth: 0.02, bladeTaper: 0.7, midribStrength: 0, bladeRaggedness: 0 };
+  const a = buildBladeGeometry(graph, base);
+  const b = buildBladeGeometry(graph, { ...base, bladeShape: 0, widestPos: 0.5 });
+  assertTypedArrayEqual(a.positions, b.positions, 'positions (identity)');
+  assertTypedArrayEqual(a.normals,   b.normals,   'normals (identity)');
+});
+
+test('bladeShape>0 widens the mid-blade ring relative to the base (belly)', () => {
+  const graph = makeBladeGraph(5, 1.0);  // sways 0, .25, .5, .75 at the 4 rings
+  const opts  = { bladeWidth: 0.02, bladeTaper: 0, midribStrength: 0 };
+  const flat   = buildBladeGeometry(graph, { ...opts, bladeShape: 0 });
+  const belly  = buildBladeGeometry(graph, { ...opts, bladeShape: 0.8, widestPos: 0.5 });
+
+  // Flat (taper 0, shape 0): every ring is the same width.
+  assert.ok(Math.abs(ringWidthNoMidrib(flat, 2) - ringWidthNoMidrib(flat, 0)) < 1e-6,
+    'flat blade should have uniform width');
+  // Belly: the ring at sway≈0.5 (ring 2) must be wider than the base ring (0).
+  assert.ok(ringWidthNoMidrib(belly, 2) > ringWidthNoMidrib(belly, 0) * 1.2,
+    `belly mid-ring (${ringWidthNoMidrib(belly, 2).toFixed(4)}) should exceed base (${ringWidthNoMidrib(belly, 0).toFixed(4)})`);
+});
+
+test('widestPos shifts where the blade is widest', () => {
+  const graph = makeBladeGraph(5, 1.0);  // rings at sway 0, .25, .5, .75
+  const opts  = { bladeWidth: 0.02, bladeTaper: 0, midribStrength: 0, bladeShape: 0.9 };
+  const lowP  = buildBladeGeometry(graph, { ...opts, widestPos: 0.25 });
+  const highP = buildBladeGeometry(graph, { ...opts, widestPos: 0.75 });
+
+  // With widest near base (0.25): ring 1 (sway .25) wider than ring 3 (sway .75).
+  assert.ok(ringWidthNoMidrib(lowP, 1) > ringWidthNoMidrib(lowP, 3),
+    'widestPos=0.25 → lower ring should be widest');
+  // With widest near tip (0.75): ring 3 wider than ring 1.
+  assert.ok(ringWidthNoMidrib(highP, 3) > ringWidthNoMidrib(highP, 1),
+    'widestPos=0.75 → upper ring should be widest');
+});
+
+test('higher bladeTaper narrows the tip faster (sharper) but leaves the base unchanged', () => {
+  const graph  = makeBladeGraph(5, 1.0);
+  const opts   = { bladeWidth: 0.02, midribStrength: 0, bladeShape: 0 };
+  const gentle = buildBladeGeometry(graph, { ...opts, bladeTaper: 0.3 });
+  const sharp  = buildBladeGeometry(graph, { ...opts, bladeTaper: 0.9 });
+
+  // Base ring (sway 0) is identical: (1 - taper*0)^pow = 1 for any taper.
+  assert.ok(Math.abs(ringWidthNoMidrib(sharp, 0) - ringWidthNoMidrib(gentle, 0)) < 1e-6,
+    'bladeTaper must not change the base width');
+  // A near-tip ring (ring 3, sway .75) is narrower with a sharper taper.
+  assert.ok(ringWidthNoMidrib(sharp, 3) < ringWidthNoMidrib(gentle, 3),
+    `sharper-taper tip ring (${ringWidthNoMidrib(sharp, 3).toFixed(4)}) should be < gentle (${ringWidthNoMidrib(gentle, 3).toFixed(4)})`);
+});
+
+test('silhouette opts: pure function (same opts → byte-identical) and no NaN', () => {
+  const graph = makeClumpGraph(4, 6);
+  const opts  = { bladeWidth: 0.018, bladeTaper: 0.6, bladeShape: 0.5, widestPos: 0.4, midribStrength: 0.25 };
+  const r1 = buildBladeGeometry(graph, opts);
+  const r2 = buildBladeGeometry(graph, opts);
+  assertTypedArrayEqual(r1.positions, r2.positions, 'positions (shape determinism)');
+  assertNoNaN(r1.positions, 'positions');
+  assertNoNaN(r1.normals,   'normals');
+});
+
+// ---------------------------------------------------------------------------
+// Cross-section curl (Phase 2): crossSectionCurl cups the blade into a channel.
+// ---------------------------------------------------------------------------
+
+test('crossSectionCurl>0 triggers the 3-vertex (midrib) ring even when midribStrength=0', () => {
+  const graph = makeBladeGraph(5);
+  const flat = buildBladeGeometry(graph, { midribStrength: 0, crossSectionCurl: 0 });
+  const cupped = buildBladeGeometry(graph, { midribStrength: 0, crossSectionCurl: 0.5 });
+  // Flat → 2 verts/ring: V = 2*(N-1)+1. Cupped → 3 verts/ring: V = 3*(N-1)+1.
+  assert.strictEqual(flat.vertexCount, 2 * (5 - 1) + 1);
+  assert.strictEqual(cupped.vertexCount, 3 * (5 - 1) + 1);
+});
+
+test('crossSectionCurl=0 is identity (byte-identical to omitting it)', () => {
+  const graph = makeBladeGraph(6);
+  const a = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0.6, midribStrength: 0.3 });
+  const b = buildBladeGeometry(graph, { bladeWidth: 0.02, bladeTaper: 0.6, midribStrength: 0.3, crossSectionCurl: 0 });
+  assertTypedArrayEqual(a.positions, b.positions, 'positions (curl identity)');
+  assertTypedArrayEqual(a.normals,   b.normals,   'normals (curl identity)');
+});
+
+test('crossSectionCurl lifts the edges out of the centre plane (channel) and tilts edge normals inward', () => {
+  // Vertical blade: tangent +Y, so frameNorm/frameU lie in the XZ plane and the
+  // curl displaces edges along frameNorm (a horizontal axis here).
+  const graph = makeBladeGraph(4, 1.0);
+  const flat   = buildBladeGeometry(graph, { bladeWidth: 0.03, bladeTaper: 0, midribStrength: 0, crossSectionCurl: 0.0001 });
+  const cupped = buildBladeGeometry(graph, { bladeWidth: 0.03, bladeTaper: 0, midribStrength: 0, crossSectionCurl: 0.8 });
+
+  // 3 verts/ring: L=base, M=base+1, R=base+2. Compare base ring (ring 0).
+  // The L and R vertices of the cupped blade must be displaced relative to the
+  // near-flat blade (edges lifted along frameNorm).
+  function vtx(res, i) { return [res.positions[i*3], res.positions[i*3+1], res.positions[i*3+2]]; }
+  const lFlat = vtx(flat, 0), lCup = vtx(cupped, 0);
+  const moved = Math.abs(lFlat[0]-lCup[0]) + Math.abs(lFlat[1]-lCup[1]) + Math.abs(lFlat[2]-lCup[2]);
+  assert.ok(moved > 1e-4, 'curl should displace the left edge vertex (channel lift)');
+
+  // Edge normals must differ from the centre normal (the fold is shaded).
+  const nL = [cupped.normals[0], cupped.normals[1], cupped.normals[2]];
+  const nM = [cupped.normals[3], cupped.normals[4], cupped.normals[5]];
+  const dot = nL[0]*nM[0] + nL[1]*nM[1] + nL[2]*nM[2];
+  assert.ok(dot < 0.999, `curled edge normal should differ from centre normal (dot=${dot.toFixed(4)})`);
+
+  // All normals remain unit length.
+  for (let vi = 0; vi < cupped.vertexCount; vi++) {
+    const nx = cupped.normals[vi*3], ny = cupped.normals[vi*3+1], nz = cupped.normals[vi*3+2];
+    const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+    assert.ok(Math.abs(len - 1) < 1e-5, `curl normal[${vi}] not unit-length: ${len}`);
+  }
+});
+
+test('crossSectionCurl: pure function + no NaN', () => {
+  const graph = makeClumpGraph(4, 6);
+  const opts  = { bladeWidth: 0.018, bladeTaper: 0.5, crossSectionCurl: 0.7, midribStrength: 0.2 };
+  const r1 = buildBladeGeometry(graph, opts);
+  const r2 = buildBladeGeometry(graph, opts);
+  assertTypedArrayEqual(r1.positions, r2.positions, 'positions (curl determinism)');
+  assertNoNaN(r1.positions, 'positions');
+  assertNoNaN(r1.normals,   'normals');
+});
+
+// ---------------------------------------------------------------------------
+// Procedural blade texture (Phase 3): createBladeMaterial injects the texture
+// shader (aBladeU attribute, vBladeU varying, uVeining uniform, vein math) and
+// stores a uVeining color uniform for the viewer to drive.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// Blade twist (Phase 5): bladeTwist spirals the ribbon along its length.
+// ---------------------------------------------------------------------------
+
+test('bladeTwist=0 is identity; bladeTwist>0 rotates the width axis toward the tip', () => {
+  const graph = makeBladeGraph(6, 1.0);
+  const base  = { bladeWidth: 0.03, bladeTaper: 0, midribStrength: 0 };
+  const flat  = buildBladeGeometry(graph, { ...base, bladeTwist: 0 });
+  const twist = buildBladeGeometry(graph, { ...base, bladeTwist: 0.8 });
+
+  // Identity: bladeTwist=0 equals omitting it.
+  const flat2 = buildBladeGeometry(graph, base);
+  assertTypedArrayEqual(flat.positions, flat2.positions, 'positions (twist=0 identity)');
+
+  // Base ring (ring 0, sway 0) must be UNCHANGED by twist (no roll at the base).
+  for (let k = 0; k < 6; k++) {
+    assert.ok(Math.abs(flat.positions[k] - twist.positions[k]) < 1e-6,
+      `base ring vertex coord ${k} should be unchanged by twist`);
+  }
+  // A tip-side ring must differ (the frame has rolled by then).
+  const ring = 3, b = ring * 2;
+  let moved = 0;
+  for (let k = 0; k < 3; k++) moved += Math.abs(flat.positions[b*3+k] - twist.positions[b*3+k]);
+  assert.ok(moved > 1e-4, 'twist should rotate the ribbon edges on tip-side rings');
+
+  assertNoNaN(twist.positions, 'positions');
+  assertNoNaN(twist.normals,   'normals');
+});
+
+// ---------------------------------------------------------------------------
+// Stem roundness (leaf↔stalk): stemRoundness>0 builds a closed round TUBE.
+// ---------------------------------------------------------------------------
+
+test('stemRoundness=0 is identity (flat ribbon, byte-identical to omitting it)', () => {
+  const graph = makeBladeGraph(6, 1.0);
+  const base  = { bladeWidth: 0.02, bladeTaper: 0.6, midribStrength: 0 };
+  const a = buildBladeGeometry(graph, base);
+  const b = buildBladeGeometry(graph, { ...base, stemRoundness: 0 });
+  assertTypedArrayEqual(a.positions, b.positions, 'positions (stemRoundness=0 identity)');
+});
+
+test('stemRoundness>0 → closed tube topology with K-gon rings (V = 8*(N-1)+1)', () => {
+  const N = 5, K = 8;
+  const graph  = makeBladeGraph(N);
+  const tube   = buildBladeGeometry(graph, { stemRoundness: 1.0, bladeWidth: 0.02 });
+  // Closed tube: K verts per non-tip ring + apex.
+  assert.strictEqual(tube.vertexCount, K * (N - 1) + 1,
+    `tube V expected ${K*(N-1)+1}, got ${tube.vertexCount}`);
+  // Triangles: 2K per gap (N-2 gaps) + K tip cone.
+  assert.strictEqual(tube.triangleCount, 2 * K * (N - 2) + K,
+    `tube T expected ${2*K*(N-2)+K}, got ${tube.triangleCount}`);
+});
+
+test('round tube: cross-section has real depth along the face axis (not flat)', () => {
+  // A flat ribbon for a vertical blade lies (nearly) in one plane through node.pos;
+  // a round tube occupies a tube of radius ~halfW in BOTH frame axes. Verify the
+  // first ring's vertices span a 2-D footprint (not collinear).
+  const graph = makeBladeGraph(4, 1.0);
+  const tube  = buildBladeGeometry(graph, { stemRoundness: 1.0, bladeWidth: 0.03, bladeTaper: 0 });
+  // Ring 0 = first 8 verts. Measure spread in X and Z (the non-up axes for a vertical blade).
+  let minX = Infinity, maxX = -Infinity, minZ = Infinity, maxZ = -Infinity;
+  for (let j = 0; j < 8; j++) {
+    const x = tube.positions[j*3], z = tube.positions[j*3+2];
+    minX = Math.min(minX, x); maxX = Math.max(maxX, x);
+    minZ = Math.min(minZ, z); maxZ = Math.max(maxZ, z);
+  }
+  assert.ok((maxX - minX) > 1e-3, 'tube ring should span width');
+  assert.ok((maxZ - minZ) > 1e-3, 'tube ring should have depth (round cross-section, not flat)');
+});
+
+test('round tube: unit normals, no NaN, deterministic', () => {
+  const graph = makeClumpGraph(3, 6);
+  const opts  = { stemRoundness: 0.8, bladeWidth: 0.02, bladeTaper: 0.4, bladeTwist: 0.3 };
+  const r1 = buildBladeGeometry(graph, opts);
+  const r2 = buildBladeGeometry(graph, opts);
+  assertTypedArrayEqual(r1.positions, r2.positions, 'positions (tube determinism)');
+  assertNoNaN(r1.positions, 'positions');
+  assertNoNaN(r1.normals,   'normals');
+  for (let vi = 0; vi < r1.vertexCount; vi++) {
+    const nx = r1.normals[vi*3], ny = r1.normals[vi*3+1], nz = r1.normals[vi*3+2];
+    const len = Math.sqrt(nx*nx + ny*ny + nz*nz);
+    assert.ok(Math.abs(len - 1) < 1e-5, `tube normal[${vi}] not unit-length: ${len}`);
+  }
+  // indices valid
+  for (let i = 0; i < r1.indices.length; i++) {
+    assert.ok(r1.indices[i] < r1.vertexCount, `index ${r1.indices[i]} >= V ${r1.vertexCount}`);
+  }
+});
+
+test('createBladeMaterial: injects procedural-texture shader (aBladeU / vBladeU / uVeining / color_fragment)', () => {
+  const windGlsl = { WIND_UNIFORM_DECLS, WIND_FUNCTION_GLSL, WIND_UNIFORM_DEFAULTS };
+  class MockMaterial { constructor(p) { Object.assign(this, p); this.userData = {}; } }
+  class MockVector2 { constructor(x, z) { this.x = x; this.z = z; } }
+  const MockTHREE = { MeshStandardMaterial: MockMaterial, DoubleSide: 2, Vector2: MockVector2 };
+
+  const mat = createBladeMaterial(MockTHREE, { windGlsl, veining: 0.6 });
+
+  // uVeining color uniform stored for viewer wiring.
+  assert.ok(mat.userData.colorUniforms.uVeining !== undefined, 'colorUniforms.uVeining should exist');
+  assert.strictEqual(mat.userData.colorUniforms.uVeining.value, 0.6, 'uVeining.value should match opt');
+
+  const mockShader = {
+    uniforms: {},
+    vertexShader: '#include <common>\n#include <project_vertex>',
+    fragmentShader: '#include <common>\n#include <color_fragment>\n#include <normal_fragment_begin>\n#include <lights_fragment_end>',
+  };
+  mat.onBeforeCompile(mockShader);
+
+  // Vertex: aBladeU attribute + vBladeU varying declared and written.
+  assert.ok(mockShader.vertexShader.includes('attribute float aBladeU'), 'vertex must declare aBladeU');
+  assert.ok(mockShader.vertexShader.includes('vBladeU = aBladeU'), 'vertex must write vBladeU');
+
+  // Fragment: vBladeU + uVeining declared; the vein math runs after color_fragment.
+  assert.ok(mockShader.fragmentShader.includes('varying float vBladeU'), 'fragment must declare vBladeU');
+  assert.ok(mockShader.fragmentShader.includes('uniform float uVeining'), 'fragment must declare uVeining');
+  assert.ok(mockShader.fragmentShader.includes('gFbm'), 'fragment must include the fbm helper');
+  // uVeining uniform injected into the program.
+  assert.ok('uVeining' in mockShader.uniforms, 'uVeining uniform should be injected');
+
+  // The texture apply must come AFTER color_fragment (so diffuseColor exists).
+  const cfIdx  = mockShader.fragmentShader.indexOf('#include <color_fragment>');
+  const texIdx = mockShader.fragmentShader.indexOf('procedural blade texture');
+  assert.ok(cfIdx !== -1 && texIdx > cfIdx, 'texture modulation must be injected after color_fragment');
 });

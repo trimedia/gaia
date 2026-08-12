@@ -74,7 +74,7 @@ describe('PRESETS — structure', () => {
       'GRASS_DEFAULT must be a plain object');
   });
 
-  it('GRASS_DEFAULT has all 19 GRASS_SCHEMA fields', () => {
+  it('GRASS_DEFAULT has all GRASS_SCHEMA fields', () => {
     const missing = firstMissingField(GRASS_DEFAULT);
     assert.equal(missing, null, `GRASS_DEFAULT missing field "${missing}"`);
   });

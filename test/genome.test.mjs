@@ -17,7 +17,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 
-import { randomGenome, resolve, speciesColor } from '../src/genome.js';
+import { randomGenome, resolve, speciesColor, computeColorAxes } from '../src/genome.js';
 import { GRASS_SCHEMA, clampField }            from '../src/genomeSchema.js';
 import { mutate }                              from '../src/mutate.js';
 import { mulberry32 }                          from '../src/rng.js';
@@ -108,7 +108,7 @@ describe('randomGenome — determinism', () => {
 // Suite 2: randomGenome — all 19 genes in range
 // ---------------------------------------------------------------------------
 
-describe('randomGenome — all 19 GRASS_SCHEMA genes in range', () => {
+describe('randomGenome — all 39 GRASS_SCHEMA genes in range', () => {
 
   it('at neutral env, 50 seeds all produce schema-valid genomes', () => {
     for (let seed = 0; seed < 50; seed++) {
@@ -131,7 +131,7 @@ describe('randomGenome — all 19 GRASS_SCHEMA genes in range', () => {
     }
   });
 
-  it('genome has exactly the 19 GRASS_SCHEMA fields — no more, no less', () => {
+  it('genome has exactly the GRASS_SCHEMA fields — no more, no less', () => {
     const g = randomGenome(NEUTRAL_ENV, 7);
     const schemaFields = new Set(Object.keys(GRASS_SCHEMA));
     for (const field of Object.keys(g)) {
@@ -512,6 +512,78 @@ describe('randomGenome → mutate round-trip schema validity', () => {
     assert.ok(r.boneCount > 0, 'resolve on mutated child returned boneCount=0');
   });
 
+});
+
+// ---------------------------------------------------------------------------
+// Suite 8b: computeColorAxes — condition-driven color (directional behavior)
+// ---------------------------------------------------------------------------
+
+describe('computeColorAxes — condition-driven color', () => {
+  const baseGenome = randomGenome(NEUTRAL_ENV, 3);
+
+  it('all axes are finite and in valid ranges at neutral env', () => {
+    const c = computeColorAxes(baseGenome, NEUTRAL_ENV);
+    for (const k of ['chlorophyllVigor', 'senescence', 'anthoTint', 'glaucousness', 'speciesHue']) {
+      assert.ok(c[k] >= 0 && c[k] <= 1, `${k}=${c[k]} out of [0,1]`);
+    }
+    assert.ok(Number.isFinite(c.starWarm) && Number.isFinite(c.starDark), 'star terms finite');
+  });
+
+  it('higher fertility → higher chlorophyll vigor (greener)', () => {
+    const lo = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, fertility: 0.1 });
+    const hi = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, fertility: 0.9 });
+    assert.ok(hi.chlorophyllVigor > lo.chlorophyllVigor,
+      `fertility↑ should raise vigor (${lo.chlorophyllVigor} → ${hi.chlorophyllVigor})`);
+  });
+
+  it('drought (aridity↑) → more senescence (gold/straw)', () => {
+    const lo = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, aridity: 0.35 });
+    const hi = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, aridity: 0.95 });
+    assert.ok(hi.senescence > lo.senescence,
+      `aridity↑ should raise senescence (${lo.senescence} → ${hi.senescence})`);
+  });
+
+  it('cold + bright light → anthocyanin tint; warm → none', () => {
+    const cold = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, temperature: 0.05, light: 0.95 });
+    const warm = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, temperature: 0.7,  light: 0.95 });
+    assert.ok(cold.anthoTint > warm.anthoTint, 'cold+light should reden more than warm');
+    assert.ok(warm.anthoTint < 0.05, `warm should have ~no anthocyanin, got ${warm.anthoTint}`);
+  });
+
+  it('anthocyanin requires light (dark cold → little tint)', () => {
+    const dark = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, temperature: 0.05, light: 0.1 });
+    const lit  = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, temperature: 0.05, light: 0.95 });
+    assert.ok(dark.anthoTint < lit.anthoTint, 'cold but dark should tint less than cold+bright');
+  });
+
+  it('aridity + sun → more glaucous wax', () => {
+    const lo = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, aridity: 0.35, sunAngle: 0.1 });
+    const hi = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, aridity: 0.95, sunAngle: 0.9 });
+    assert.ok(hi.glaucousness > lo.glaucousness,
+      `aridity+sun should raise glaucousness (${lo.glaucousness} → ${hi.glaucousness})`);
+  });
+
+  it('star: Sun-like default is a no-op (starWarm 0, starDark 1); cool star darkens', () => {
+    const sun  = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, starTemp: 0.55 });
+    assert.ok(Math.abs(sun.starWarm) < 1e-9, 'Sun starWarm ≈ 0');
+    assert.equal(sun.starDark, 1, 'Sun starDark = 1');
+    const cool = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, starTemp: 0.0 });
+    assert.ok(cool.starWarm < 0, 'cool star warm < 0 (shader reddens)');
+    assert.ok(cool.starDark < 1, 'cool star darkens');
+    const hot = computeColorAxes(baseGenome, { ...NEUTRAL_ENV, starTemp: 1.0 });
+    assert.ok(hot.starWarm > 0, 'hot star warm > 0 (shader yellows)');
+  });
+
+  it('deterministic: same (genome, env) → identical axes', () => {
+    const a = computeColorAxes(baseGenome, NEUTRAL_ENV);
+    const b = computeColorAxes(baseGenome, NEUTRAL_ENV);
+    assert.deepEqual(a, b);
+  });
+
+  it('resolve() returns a color axes object', () => {
+    const r = resolve(baseGenome, NEUTRAL_ENV);
+    assert.ok(r.color && typeof r.color.chlorophyllVigor === 'number', 'resolve.color present');
+  });
 });
 
 // ---------------------------------------------------------------------------

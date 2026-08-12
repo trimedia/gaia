@@ -42,7 +42,7 @@ import { RenderPass }      from 'three/examples/jsm/postprocessing/RenderPass.js
 import { UnrealBloomPass } from 'three/examples/jsm/postprocessing/UnrealBloomPass.js';
 import { SMAAPass }        from 'three/examples/jsm/postprocessing/SMAAPass.js';
 import { OutputPass }      from 'three/examples/jsm/postprocessing/OutputPass.js';
-import { buildBladeGeometry, createBladeMaterial, createBladeDepthMaterial } from './bladeMesh.js';
+import { buildBladeGeometry, createBladeMaterial, createBladeDepthMaterial, bladeWidthGeneToWorld } from './bladeMesh.js';
 import * as windGlsl from './windGlsl.js';
 import { computeFieldScatter } from './fieldScatter.js';
 import { makeGrassBillboardTexture, buildBillboardField } from './billboardField.js';
@@ -280,8 +280,9 @@ export function createViewer(canvas) {
   // ---------------------------------------------------------------------------
   const bladeMaterial = createBladeMaterial(THREE, {
     windGlsl,
-    pigment: 0.30,        // neutral grass-green (matches GRASS_SCHEMA pigment neutral)
+    color: {},            // identity green; pigment-stack axes updated live in setPlant
     colorVariation: 0.0,  // updated live in setPlant from resolved genome
+    veining: 0.5,         // procedural blade texture; updated live in setPlant
   });
   const bladeDepthMaterial = createBladeDepthMaterial(THREE, { windGlsl });
 
@@ -294,6 +295,105 @@ export function createViewer(canvas) {
   specimenMesh.receiveShadow = true;
   specimenMesh.customDepthMaterial = bladeDepthMaterial;
   scene.add(specimenMesh);
+
+  // ---------------------------------------------------------------------------
+  // Grain / inflorescence InstancedMesh — renders resolved.foliage (the seed-head
+  // SoA: grain ovoids + thin awn bristles). One shared low-poly ovoid geometry,
+  // instanced; per-instance matrix from position/tangent/scale·aspect and a
+  // per-instance ripeness colour from ageColor (green→straw). Specimen view only.
+  // ---------------------------------------------------------------------------
+  const grainGeo = new THREE.IcosahedronGeometry(1, 1);
+
+  // Inject the SAME wind displacement the blades use, so grain ears track the
+  // swaying blade tips (and sway with them) instead of floating, detached and
+  // motionless, at the rest tip. swayFactor = 1.0 (ears sit at/above the blade
+  // tip, which uses aSwayFactor=1) → the ear translates with the tip. Applied
+  // post-instanceMatrix and counter-rotated, exactly like createBladeMaterial.
+  function injectGrainWind(mat) {
+    const { WIND_UNIFORM_DECLS, WIND_FUNCTION_GLSL, WIND_UNIFORM_DEFAULTS } = windGlsl;
+    mat.userData.windUniforms = {
+      uTime:         { value: WIND_UNIFORM_DEFAULTS.uTime },
+      uWindStrength: { value: WIND_UNIFORM_DEFAULTS.uWindStrength },
+      uWindDir:      { value: new THREE.Vector2(...WIND_UNIFORM_DEFAULTS.uWindDir) },
+    };
+    mat.onBeforeCompile = function (shader) {
+      Object.assign(shader.uniforms, mat.userData.windUniforms);
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <common>',
+        ['#include <common>', WIND_UNIFORM_DECLS, WIND_FUNCTION_GLSL].join('\n')
+      );
+      shader.vertexShader = shader.vertexShader.replace(
+        '#include <project_vertex>',
+        [
+          '// --- grain/ear wind: track + sway with the blade tips ---',
+          'vec4 _gwp = vec4(transformed, 1.0);',
+          '#ifdef USE_INSTANCING',
+          '  _gwp = instanceMatrix * _gwp;',
+          '#endif',
+          '_gwp = modelMatrix * _gwp;',
+          'vec3 _gwind = windOffset(_gwp.xyz, 1.0);',
+          '#ifdef USE_INSTANCING',
+          '  _gwind = inverse(mat3(instanceMatrix)) * _gwind;',
+          '#endif',
+          'transformed += _gwind;',
+          '#include <project_vertex>',
+        ].join('\n')
+      );
+      mat.userData.compiledShader = shader;
+    };
+    mat.needsUpdate = true;
+  }
+
+  const grainMat = new THREE.MeshStandardMaterial({ roughness: 0.6, metalness: 0.0 });
+  injectGrainWind(grainMat);
+  // Depth material so the ear's shadow follows the wind sway too.
+  const grainDepthMat = new THREE.MeshDepthMaterial({ depthPacking: THREE.RGBADepthPacking });
+  injectGrainWind(grainDepthMat);
+  let grainMesh = null;
+
+  function updateGrainMesh(foliage) {
+    if (!foliage || !foliage.scale) {
+      if (grainMesh) grainMesh.visible = false;
+      return;
+    }
+    const cap = foliage.scale.length;
+    if (!grainMesh) {
+      grainMesh = new THREE.InstancedMesh(grainGeo, grainMat, cap);
+      grainMesh.castShadow = true;
+      grainMesh.receiveShadow = true;
+      grainMesh.frustumCulled = false;
+      grainMesh.customDepthMaterial = grainDepthMat;  // wind-aware shadow
+      scene.add(grainMesh);
+    }
+    const cnt = Math.min(foliage.count, cap);
+    const m  = new THREE.Matrix4();
+    const q  = new THREE.Quaternion();
+    const p  = new THREE.Vector3();
+    const s  = new THREE.Vector3();
+    const up = new THREE.Vector3(0, 1, 0);
+    const tan = new THREE.Vector3();
+    const col = new THREE.Color();
+    for (let i = 0; i < cnt; i++) {
+      p.set(foliage.position[i * 3], foliage.position[i * 3 + 1], foliage.position[i * 3 + 2]);
+      tan.set(foliage.tangent[i * 3], foliage.tangent[i * 3 + 1], foliage.tangent[i * 3 + 2]);
+      if (tan.lengthSq() < 1e-8) tan.set(0, 1, 0); else tan.normalize();
+      q.setFromUnitVectors(up, tan);
+      const sc  = foliage.scale[i];
+      const asp = foliage.aspect ? foliage.aspect[i] : 1;
+      s.set(sc, sc * asp, sc);          // stretch the long axis (awns → thin bristles)
+      m.compose(p, q, s);
+      grainMesh.setMatrixAt(i, m);
+      // ageColor 0 (green/unripe) → 1 (amber/straw): linear RGB, matches blade path.
+      const a = foliage.ageColor[i];
+      col.setRGB(0.20 + 0.55 * a, 0.34 + 0.30 * a, 0.10 + 0.16 * a);
+      grainMesh.setColorAt(i, col);
+    }
+    grainMesh.count = cnt;
+    grainMesh.instanceMatrix.needsUpdate = true;
+    if (grainMesh.instanceColor) grainMesh.instanceColor.needsUpdate = true;
+    // Grains are authored in specimen view; the field view is the lawn carpet.
+    grainMesh.visible = (currentViewMode === 'specimen') && cnt > 0;
+  }
 
   // ---------------------------------------------------------------------------
   // Field mesh — InstancedMesh; rebuilt on demand, null when in specimen mode.
@@ -376,6 +476,8 @@ export function createViewer(canvas) {
   function applyWindUniforms(strength) {
     applyWindToMaterial(bladeMaterial, strength);
     applyWindToMaterial(bladeDepthMaterial, strength);
+    applyWindToMaterial(grainMat, strength);
+    applyWindToMaterial(grainDepthMat, strength);
   }
 
   // ---------------------------------------------------------------------------
@@ -533,6 +635,12 @@ export function createViewer(canvas) {
       geo.setAttribute('ao',         new THREE.BufferAttribute(g.ao,         1));
       geo.setAttribute('aSwayFactor', new THREE.BufferAttribute(g.swayFactor, 1));
       geo.setAttribute('colorSeed',  new THREE.BufferAttribute(g.colorSeed,  1));
+      // aBladeU: per-vertex across-width coordinate (u channel of the UVs) for the
+      // procedural blade-texture fragment shader. three.js does not expose vUv
+      // without a map, so the blade material reads this custom attribute instead.
+      const bladeU = new Float32Array(g.vertexCount);
+      for (let i = 0; i < g.vertexCount; i++) bladeU[i] = g.uvs[i * 2];
+      geo.setAttribute('aBladeU', new THREE.BufferAttribute(bladeU, 1));
       geo.setIndex(new THREE.BufferAttribute(g.indices, 1));
     }
 
@@ -679,6 +787,7 @@ export function createViewer(canvas) {
       scene.add(specimenMesh);
     }
     specimenMesh.visible = true;
+    if (grainMesh) grainMesh.visible = grainMesh.count > 0;
   }
 
   // ---------------------------------------------------------------------------
@@ -690,8 +799,9 @@ export function createViewer(canvas) {
     // Remove any stale field mesh first.
     disposeFieldMesh();
 
-    // Hide the specimen.
+    // Hide the specimen (and its grains — field view is the lawn carpet).
     specimenMesh.visible = false;
+    if (grainMesh) grainMesh.visible = false;
 
     // Build the field InstancedMesh on the current blade geometry.
     const scatterSeed = lastResolved.genome
@@ -758,8 +868,14 @@ export function createViewer(canvas) {
       // 1. Build blade geometry from the solved graph.
       // -------------------------------------------------------------------
       const g = buildBladeGeometry(resolved.graph, {
-        bladeWidth:      resolved.bladeWidth      ?? 0.015,
+        // Map the bladeWidth gene [0,1] → world half-width (fine grass → broadleaf).
+        bladeWidth:      bladeWidthGeneToWorld(resolved.bladeWidth ?? 0.15),
         bladeTaper:      resolved.bladeTaper      ?? 0.5,
+        bladeShape:      resolved.bladeShape      ?? 0,
+        widestPos:       resolved.widestPos       ?? 0.5,
+        crossSectionCurl: resolved.crossSectionCurl ?? 0,
+        bladeTwist:      resolved.bladeTwist      ?? 0,
+        stemRoundness:   resolved.stemRoundness   ?? 0,
         midribStrength:  resolved.midribStrength  ?? 0.15,
         bladeRaggedness: resolved.bladeRaggedness ?? 0.05,
       });
@@ -789,9 +905,22 @@ export function createViewer(canvas) {
       // -------------------------------------------------------------------
       const cu = bladeMaterial.userData.colorUniforms;
       if (cu) {
-        cu.uPigment.value        = resolved.pigment        ?? 0.30;
-        cu.uColorVariation.value = resolved.colorVariation ?? 0.20;
+        const ca = resolved.color || {};
+        cu.uChlorophyllVigor.value = ca.chlorophyllVigor ?? 0.6;
+        cu.uSenescence.value       = ca.senescence       ?? 0.0;
+        cu.uAnthoTint.value        = ca.anthoTint        ?? 0.0;
+        cu.uGlaucousness.value     = ca.glaucousness     ?? 0.0;
+        cu.uSpeciesHue.value       = ca.speciesHue       ?? 0.30;
+        cu.uStarWarm.value         = ca.starWarm         ?? 0.0;
+        cu.uStarDark.value         = ca.starDark         ?? 1.0;
+        cu.uColorVariation.value   = resolved.colorVariation ?? 0.20;
+        if (cu.uVeining) cu.uVeining.value = resolved.veining ?? 0.5;
       }
+
+      // -------------------------------------------------------------------
+      // 1c. Grain / inflorescence instances (resolved.foliage → grainMesh).
+      // -------------------------------------------------------------------
+      updateGrainMesh(resolved.foliage);
 
       // -------------------------------------------------------------------
       // 2. Sun light + sky — sync to lightDir.
@@ -960,6 +1089,10 @@ export function createViewer(canvas) {
       canvas.removeEventListener('contextmenu',   onContextMenu);
 
       disposeFieldMesh();
+      if (grainMesh) { scene.remove(grainMesh); grainMesh.dispose(); grainMesh = null; }
+      grainGeo.dispose();
+      grainMat.dispose();
+      grainDepthMat.dispose();
       bladeGeometry.dispose();
       bladeMaterial.dispose();
       bladeDepthMaterial.dispose();

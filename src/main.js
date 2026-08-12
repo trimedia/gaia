@@ -1,8 +1,8 @@
-import { randomGenome, resolve }          from './genome.js';
+import { randomGenome, resolve, computeColorAxes } from './genome.js';
 import { createViewer }                   from './viewer.js';
 import { createRenderModeController }     from './renderModes.js';
 import { GRASS_DEFAULT, PRESETS }         from './presets.js';
-import { pigmentToColor }                 from './colorRamp.js';
+import { colorStackRGB }                  from './colorRamp.js';
 
 // =============================================================================
 // MODULE STATE
@@ -18,12 +18,14 @@ let genome = null;   // current specimen's full gene vector (incl. structuralSee
 const MORPH_GENES = [
   // Form (Structural)
   'tillerCount', 'clumpSpread', 'bladeSegments', 'seedHead', 'fanSpread',
-  // Blade (Proportions)
-  'bladeLength', 'bladeWidth', 'bladeTaper',
-  // Posture (Proportions)
-  'arch', 'curve', 'stiffness', 'verticality', 'tipDroop',
+  'inflorescenceType', 'spikeletCount', 'grainsPerSpikelet', 'awnLength', 'midEarBulge',
+  // Blade (Proportions) — bladeLength/bladeWidth/bladeTaper are two-point (see DUAL_GENES)
+  'bladeShape', 'widestPos', 'crossSectionCurl', 'bladeTwist', 'stemRoundness',
+  // Posture (Proportions) — arch/tipDroop are two-point (see DUAL_GENES)
+  'curve', 'stiffness', 'verticality',
   // Look (Cosmetic)
-  'pigment', 'bladeRaggedness', 'colorVariation', 'jitter', 'midribStrength',
+  'pigment', 'chlorophyll', 'senescence', 'anthoPropensity', 'glaucousness',
+  'bladeRaggedness', 'colorVariation', 'jitter', 'midribStrength', 'veining',
 ];
 
 // Map gene name → slider element id
@@ -33,9 +35,19 @@ const GENE_SLIDER_ID = {
   bladeSegments:   'bladeSegmentsSlider',
   seedHead:        'seedHeadSlider',
   fanSpread:       'fanSpreadSlider',
+  inflorescenceType: 'inflorescenceTypeSlider',
+  spikeletCount:     'spikeletCountSlider',
+  grainsPerSpikelet: 'grainsPerSpikeletSlider',
+  awnLength:         'awnLengthSlider',
+  midEarBulge:       'midEarBulgeSlider',
   bladeLength:     'bladeLengthSlider',
   bladeWidth:      'bladeWidthSlider',
   bladeTaper:      'bladeTaperSlider',
+  bladeShape:      'bladeShapeSlider',
+  widestPos:       'widestPosSlider',
+  crossSectionCurl: 'crossSectionCurlSlider',
+  bladeTwist:      'bladeTwistSlider',
+  stemRoundness:   'stemRoundnessSlider',
   arch:            'archSlider',
   curve:           'curveSlider',
   stiffness:       'stiffnessSlider',
@@ -46,7 +58,26 @@ const GENE_SLIDER_ID = {
   colorVariation:  'colorVariationSlider',
   jitter:          'jitterSlider',
   midribStrength:  'midribStrengthSlider',
+  veining:         'veiningSlider',
+  chlorophyll:     'chlorophyllSlider',
+  senescence:      'senescenceSlider',
+  anthoPropensity: 'anthoPropensitySlider',
+  glaucousness:    'glaucousnessSlider',
 };
+
+// =============================================================================
+// TWO-POINT (min–max) BLADE PARAMETERS
+// Each is a pair of sliders: the base gene is the MIN, the …Max gene is the MAX.
+// Every blade in a clump samples its own value in [min, max] (skeleton.js), so
+// a clump has varied tillers. min ≤ max is enforced as you drag either thumb.
+// =============================================================================
+const DUAL_GENES = [
+  { min: 'bladeLength', max: 'bladeLengthMax' },
+  { min: 'bladeWidth',  max: 'bladeWidthMax' },
+  { min: 'bladeTaper',  max: 'bladeTaperMax' },
+  { min: 'arch',        max: 'archMax' },
+  { min: 'tipDroop',    max: 'tipDroopMax' },
+];
 
 // =============================================================================
 // ENV ENVELOPE — reads climate sliders; energy/biochem locked
@@ -62,6 +93,8 @@ function getEnvelope() {
     sunAngle:    parseFloat(document.getElementById('sunAngleSlider').value ?? '0.25'),
     wind:        parseFloat(document.getElementById('windSlider').value    ?? '0.2'),
     aridity:     parseFloat(document.getElementById('ariditySlider').value ?? '0.35'),
+    fertility:   parseFloat(document.getElementById('fertilitySlider')?.value ?? '0.5'),
+    starTemp:    parseFloat(document.getElementById('starTempSlider')?.value  ?? '0.55'),
   };
 }
 
@@ -190,6 +223,20 @@ function syncSlidersFromGenome(g) {
       if (label) label.textContent = parseFloat(g[gene]).toFixed(2);
     }
   }
+  // Two-point (min–max) pairs: max defaults to min when the gene is absent.
+  for (const { min, max } of DUAL_GENES) {
+    const minS = document.getElementById(min + 'Slider');
+    const maxS = document.getElementById(max + 'Slider');
+    if (!minS || !maxS) continue;
+    const mn = g[min];
+    const mx = g[max] !== undefined ? g[max] : g[min];
+    minS.value = mn;
+    maxS.value = mx;
+    const minL = document.getElementById(min + 'Val');
+    const maxL = document.getElementById(max + 'Val');
+    if (minL) minL.textContent = parseFloat(mn).toFixed(2);
+    if (maxL) maxL.textContent = parseFloat(mx).toFixed(2);
+  }
 }
 
 /** Re-resolve current genome against env and push to viewer. */
@@ -238,6 +285,8 @@ wireClimateSlider('lightSlider',    'lightVal');
 wireClimateSlider('sunAngleSlider', 'sunAngleVal');
 wireClimateSlider('windSlider',     'windVal');
 wireClimateSlider('ariditySlider',  'aridityVal');
+wireClimateSlider('fertilitySlider', 'fertilityVal');
+wireClimateSlider('starTempSlider',  'starTempVal');
 
 document.getElementById('mediumSel').addEventListener('change', renderCurrent);
 
@@ -267,6 +316,32 @@ for (const gene of MORPH_GENES) {
       genome[gene] = val;
       renderCurrent();
     }
+  });
+}
+
+// Two-point (min–max) blade parameter wiring: two sliders per parameter, with
+// min ≤ max enforced (the thumb you drag pushes the other when they'd cross).
+for (const { min, max } of DUAL_GENES) {
+  const minS = document.getElementById(min + 'Slider');
+  const maxS = document.getElementById(max + 'Slider');
+  if (!minS || !maxS) continue;
+  const minL = document.getElementById(min + 'Val');
+  const maxL = document.getElementById(max + 'Val');
+
+  function writeDual(mn, mx) {
+    if (minL) minL.textContent = mn.toFixed(2);
+    if (maxL) maxL.textContent = mx.toFixed(2);
+    if (genome) { genome[min] = mn; genome[max] = mx; renderCurrent(); }
+  }
+  minS.addEventListener('input', () => {
+    let mn = parseFloat(minS.value), mx = parseFloat(maxS.value);
+    if (mn > mx) { mx = mn; maxS.value = String(mx); }   // push max up
+    writeDual(mn, mx);
+  });
+  maxS.addEventListener('input', () => {
+    let mn = parseFloat(minS.value), mx = parseFloat(maxS.value);
+    if (mx < mn) { mn = mx; minS.value = String(mn); }   // push min down
+    writeDual(mn, mx);
   });
 }
 
@@ -347,9 +422,8 @@ document.getElementById('rerollSeedBtn').addEventListener('click', () => {
         card.type = 'button';
         card.dataset.presetId = preset.id;
 
-        // Color swatch from pigment gene.
-        const pigment = preset.genome?.pigment ?? 0.30;
-        const [r, g, b] = pigmentToColor(pigment);
+        // Color swatch from the condition-driven pigment stack (neutral env).
+        const [r, g, b] = colorStackRGB(computeColorAxes(preset.genome, {}));
         const swatch = document.createElement('span');
         swatch.className = 'preset-swatch';
         swatch.style.background =
@@ -418,7 +492,10 @@ document.getElementById('rerollSeedBtn').addEventListener('click', () => {
 // mid lawn blade clump. The "Generate" button rolls a climate-adapted random genome.
 // =============================================================================
 
-genome = { ...GRASS_DEFAULT };
+// Boot with a "live" specimen: GRASS_DEFAULT plus a small awned flower head so
+// the inflorescence sliders (seed head / spikelet / grains / awn / bulge) visibly
+// respond on first load. Picking the Lawn preset reverts to the clean turf vector.
+genome = { ...GRASS_DEFAULT, seedHead: 0.25, inflorescenceType: 0.45, awnLength: 0.2 };
 syncSlidersFromGenome(genome);
 const resolved = resolve(genome, getEnvelope());
 viewer.setPlant(resolved);

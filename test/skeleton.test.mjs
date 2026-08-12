@@ -623,3 +623,53 @@ test('fanSpread: last blade azimuth reaches baseFanAngle (no angular gap)', () =
     `fanSpread=0.5 first blade azimuth should be ≈ 0, got ${normalised[0].toFixed(6)}`
   );
 });
+
+// ---------------------------------------------------------------------------
+// Per-blade variation: two-point ranges (bladeLengthMax etc.) make each blade
+// in a clump sample its own value, so a clump has varied tillers.
+// ---------------------------------------------------------------------------
+
+/** Heights (tip Y) of the FULL blades only (weight ≈ 1; excludes the crossfade). */
+function fullBladeTipHeights(nodes) {
+  return nodes.filter(n => n.isTerminal && (n.weight === undefined || n.weight > 0.99)).map(n => n.pos[1]);
+}
+
+test('bladeLengthMax > bladeLength → blades in a clump have varied heights', () => {
+  // curve:0 → straight-up blades, so tip Y directly reflects length.
+  const g = makeGenome({ tillerCount: 0.8, bladeLength: 0.35, bladeLengthMax: 0.7, curve: 0, structuralSeed: 123 });
+  const { nodes } = buildSkeleton(g, mulberry32(g.structuralSeed));
+  const h = fullBladeTipHeights(nodes);
+  assert.ok(h.length >= 4, `need several full blades, got ${h.length}`);
+  const spread = Math.max(...h) - Math.min(...h);
+  assert.ok(spread > 0.05, `blades should vary in height, spread=${spread.toFixed(3)}`);
+});
+
+test('bladeLengthMax === bladeLength (or absent) → all full blades same height', () => {
+  // Absent (makeGenome has no …Max) → fallback max=min → no length variation.
+  // curve:0 isolates length (lateral curvature would otherwise nudge tip Y).
+  const { nodes } = buildSkeleton(makeGenome({ tillerCount: 0.8, curve: 0, structuralSeed: 123 }), mulberry32(123));
+  const h = fullBladeTipHeights(nodes);
+  const spread = Math.max(...h) - Math.min(...h);
+  assert.ok(spread < 1e-6, `no range → uniform height, but spread=${spread}`);
+});
+
+test('per-blade sampled values are stored on base nodes (vWidth/vTaper/vArch/vTipDroop)', () => {
+  const g = makeGenome({ tillerCount: 0.8, bladeWidthMax: 0.9, bladeWidth: 0.2, structuralSeed: 5 });
+  const { nodes } = buildSkeleton(g, mulberry32(5));
+  const bases = nodes.filter(n => n.parentIdx === -1);
+  for (const b of bases) {
+    for (const k of ['vWidth', 'vTaper', 'vArch', 'vTipDroop']) {
+      assert.ok(typeof b[k] === 'number' && isFinite(b[k]), `base node missing ${k}`);
+    }
+  }
+  // width values should differ across blades (range 0.2–0.9).
+  const ws = bases.filter(b => b.weight > 0.99).map(b => b.vWidth);
+  assert.ok(Math.max(...ws) - Math.min(...ws) > 0.05, 'vWidth should vary across blades');
+});
+
+test('per-blade variation is deterministic (same genome+seed → identical heights)', () => {
+  const g = makeGenome({ tillerCount: 0.8, bladeLengthMax: 0.7, structuralSeed: 42 });
+  const a = fullBladeTipHeights(buildSkeleton(g, mulberry32(42)).nodes);
+  const b = fullBladeTipHeights(buildSkeleton(g, mulberry32(42)).nodes);
+  assert.deepEqual(a, b);
+});
